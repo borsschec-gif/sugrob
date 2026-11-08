@@ -56,7 +56,7 @@ private final class SnowCap {
     private(set) var cornerRadius: Float?
     private var snowStart: Float {
         guard let cornerRadius else { return 16 }
-        return cornerRadius < 6 ? cornerRadius * 0.36 : cornerRadius * 0.05
+        return cornerRadius < 6 ? cornerRadius * 0.36 : cornerRadius * cornerWrapStart
     }
     private var snowTaper: Float {
         guard let cornerRadius else { return 10 }
@@ -66,6 +66,8 @@ private final class SnowCap {
     private var heightLimit: Float = .infinity
     /// Настоящий контур верха иконки: на сколько точек он ниже самой высокой точки.
     var surfaceProfile: [Float]?
+    /// Где на дуге угла заканчивается снег: чем больше, тем меньше он заходит на закругление.
+    var cornerWrapStart: Float = 0.05
 
     func limitHeight(to limit: Float) {
         heightLimit = limit
@@ -445,7 +447,7 @@ final class CapField {
     private static let closeDelay: CFTimeInterval = 0.15
     private static let maxBrushSpeed: Float = 1500
     /// Медленнее этого курсор скатывает снежок, а не стряхивает снег.
-    private static let minBrushSpeed: Float = 250
+    private static let minBrushSpeed: Float = 60
     private static let maxBallRadius: Float = 34
     /// Меньший сдвиг за опрос считаем обычным движением окна, а не сменой Space.
     private static let slideThreshold: CGFloat = 12
@@ -469,6 +471,7 @@ final class CapField {
     var cursorEffectsEnabled = true
     private var dwellTime: Float = 0
     private var dwellPath: Float = 0
+    private var smoothedCursorSpeed: Float = 0
     private var lastSync: CFTimeInterval = -1
     private var lastRelax: CFTimeInterval = 0
     private var hasSeeded = false
@@ -513,6 +516,11 @@ final class CapField {
                 let cap = SnowCap(width: width, phases: phases, now: now)
                 if isFirstBatch { cap.seed(using: &generator) }
                 // Угол папки маленький: снег лежит почти на всю её ширину.
+                // Радиус плашки Dock снят по снимку экрана, измерить его как у окна нельзя.
+                if window.isDock {
+                    cap.setCornerRadius(28)
+                    cap.cornerWrapStart = 0.3
+                }
                 if window.isDesktopIcon {
                     cap.setCornerRadius(4)
                     cap.limitHeight(to: 5)
@@ -745,14 +753,16 @@ final class CapField {
         let distance = simd_length(delta)
         var velocity = delta / max(interval, 0.004)
         let speed = simd_length(velocity)
+        // На малой скорости курсор идёт рывками, поэтому порог сравнивается со сглаженной скоростью.
+        smoothedCursorSpeed += (speed - smoothedCursorSpeed) * min(1, interval * 8)
 
         if ball?.windowID != nil {
             rollBall(cursor: cursor, dt: interval, now: now)
             return
         }
-        if ball == nil, startBallIfDwelling(cursor: cursor, speed: speed, distance: distance, dt: interval) { return }
+        if ball == nil, startBallIfDwelling(cursor: cursor, speed: smoothedCursorSpeed, distance: distance, dt: interval) { return }
 
-        guard distance >= 1, distance < 600, speed >= Self.minBrushSpeed, speed <= Self.maxBrushSpeed else { return }
+        guard distance >= 1, distance < 600, smoothedCursorSpeed >= Self.minBrushSpeed, speed <= Self.maxBrushSpeed else { return }
         if speed > 900 { velocity *= 900 / speed }
 
         let steps = min(30, Int(distance / 5) + 1)

@@ -24,8 +24,8 @@ final class DockTracker {
             self.list = nil
             return nil
         }
-        // Рамка AXList больше видимой плашки: верх стекла ниже на 6 pt, а углы у неё круче, чем у окон.
-        return CGRect(x: frame.minX + 14, y: frame.minY + 6, width: frame.width - 28, height: frame.height - 6)
+        // Рамка AXList выше видимой плашки: верх стекла ниже на 6 pt.
+        return CGRect(x: frame.minX, y: frame.minY + 6, width: frame.width, height: frame.height - 6)
     }
 
     private func findList() -> AXUIElement? {
