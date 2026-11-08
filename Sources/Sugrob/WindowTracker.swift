@@ -12,6 +12,11 @@ struct TrackedWindow: Sendable {
     let holdsSnow: Bool
     var isDock = false
     var layer = 0
+    var isDesktopIcon = false
+    /// Контур верха иконки по точкам ширины.
+    var topProfile: [Float]?
+    /// Dock и иконки рабочего стола не уезжают при смене Space и не двигаются как окна.
+    var isFixedSurface: Bool { isDock || isDesktopIcon }
 }
 
 struct WindowSnapshot: Sendable {
@@ -42,6 +47,7 @@ final class WindowTracker: @unchecked Sendable {
     private var lastActivity: CFTimeInterval = 0
 
     private let dock = DockTracker()
+    private let desktopIcons = DesktopIcons()
     private var meter = DragMeter()
     private var pollCount = 0
     private var costSum = 0.0
@@ -127,6 +133,9 @@ final class WindowTracker: @unchecked Sendable {
                 isNearDock = frame.insetBy(dx: -40, dy: -80).contains(cursor) || cursor.y >= mainDisplay.maxY - 8
             }
         }
+
+        // Иконки лежат под всеми окнами, поэтому в конце списка.
+        windows.append(contentsOf: desktopIcons.current(now: started, isBusy: isFast))
 
         let isMouseDown = CGEventSource.buttonState(.combinedSessionState, button: .left)
         let snapshot = WindowSnapshot(

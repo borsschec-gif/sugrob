@@ -118,7 +118,7 @@ final class PowerGovernor {
 
     private var isFullScreenAppInFront: Bool {
         let main = CGDisplayBounds(CGMainDisplayID())
-        guard let front = tracker.snapshot.windows.first(where: { $0.holdsSnow && !$0.isDock }) else { return false }
+        guard let front = tracker.snapshot.windows.first(where: { $0.holdsSnow && !$0.isFixedSurface }) else { return false }
         return front.frame.contains(main)
     }
 

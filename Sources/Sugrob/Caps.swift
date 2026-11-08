@@ -55,7 +55,19 @@ private final class SnowCap {
     /// Настоящий радиус угла, если удалось измерить. Без него снег лежит только на ровном участке края.
     private(set) var cornerRadius: Float?
     private var snowStart: Float { cornerRadius.map { $0 * 0.36 } ?? 16 }
-    private var snowTaper: Float { cornerRadius == nil ? 10 : 14 }
+    private var snowTaper: Float {
+        guard let cornerRadius else { return 10 }
+        return cornerRadius < 6 ? 6 : 14
+    }
+    /// Предел высоты снега: на маленькой иконке сугроб ниже.
+    private var heightLimit: Float = .infinity
+    /// Настоящий контур верха иконки: на сколько точек он ниже самой высокой точки.
+    var surfaceProfile: [Float]?
+
+    func limitHeight(to limit: Float) {
+        heightLimit = limit
+        for index in heights.indices { heights[index] = min(heights[index], limit) }
+    }
 
     private(set) var heights: [Float]
     private var detail: [Float] = []
@@ -200,6 +212,13 @@ private final class SnowCap {
 
     /// На сколько край окна опускается в этой точке из-за скругления угла.
     func baseDrop(atLocal u: Float) -> Float {
+        if let surfaceProfile, !surfaceProfile.isEmpty {
+            return surfaceProfile[max(0, min(surfaceProfile.count - 1, Int(u)))]
+        }
+        return cornerDrop(atLocal: u)
+    }
+
+    private func cornerDrop(atLocal u: Float) -> Float {
         guard let radius = cornerRadius else { return 0 }
         let edge = max(0, min(u, width - u))
         guard edge < radius else { return 0 }
@@ -382,7 +401,7 @@ private final class SnowCap {
         let radius = 12
         for index in max(0, center - radius)...min(heights.count - 1, center + radius) {
             let distance = Float(index - center) / 5
-            let room = max(0, 1 - heights[index] / maxHeight)
+            let room = max(0, 1 - heights[index] / min(maxHeight, heightLimit))
             heights[index] += amount * exp(-0.5 * distance * distance) * room
         }
     }
@@ -430,6 +449,7 @@ final class CapField {
     private var pinnedDuringSlide = Set<CGWindowID>()
     private var pendingClosed: [(id: CGWindowID, list: [TrackedWindow], deadline: CFTimeInterval)] = []
     private var grabbedID: CGWindowID?
+    private var grabCursor = CGPoint.zero
     private var wasMouseDown = false
     private var lastBrushTime: CFTimeInterval = 0
     private var lastBrushCursor: CGPoint?
@@ -480,6 +500,12 @@ final class CapField {
                     Float.random(in: 0...6.28, using: &generator))
                 let cap = SnowCap(width: width, phases: phases, now: now)
                 if isFirstBatch { cap.seed(using: &generator) }
+                // Угол папки маленький: снег лежит почти на всю её ширину.
+                if window.isDesktopIcon {
+                    cap.setCornerRadius(4)
+                    cap.limitHeight(to: 5)
+                    cap.surfaceProfile = window.topProfile
+                }
                 caps[window.id] = cap
             }
         }
@@ -501,7 +527,7 @@ final class CapField {
         var shift: CGFloat?
         var movers = Set<CGWindowID>()
         var pinned = Set<CGWindowID>()
-        for window in windows where window.holdsSnow && !window.isDock {
+        for window in windows where window.holdsSnow && !window.isFixedSurface {
             guard let frame = oldByID[window.id] else { continue }
             if frame == window.frame {
                 pinned.insert(window.id)
@@ -580,6 +606,12 @@ final class CapField {
     ) {
         if snapshot.isMouseDown && !wasMouseDown {
             grabbedID = windows.first { $0.frame.contains(snapshot.cursor) }?.id
+            grabCursor = snapshot.cursor
+        }
+        // Папку взяли и потащили: положение иконки известно редко, поэтому снег с неё ссыпается сразу.
+        if snapshot.isMouseDown, let grabbedID, windows.contains(where: { $0.id == grabbedID && $0.isDesktopIcon }),
+           hypot(snapshot.cursor.x - grabCursor.x, snapshot.cursor.y - grabCursor.y) >= 4 {
+            shedSnow(of: windows, only: [grabbedID], direction: 0)
         }
         wasMouseDown = snapshot.isMouseDown
         for cap in caps.values where !cap.trail.isEmpty && (grabbedID == nil || !snapshot.isMouseDown) {
@@ -587,7 +619,7 @@ final class CapField {
         }
         guard snapshot.isMouseDown, let grabbedID,
               let index = windows.firstIndex(where: { $0.id == grabbedID }),
-              windows[index].holdsSnow, !windows[index].isDock,
+              windows[index].holdsSnow, !windows[index].isFixedSurface,
               let cap = caps[grabbedID] else { return }
 
         let window = windows[index]
@@ -660,6 +692,7 @@ final class CapField {
         // Окна «на всех рабочих столах» никуда не уехали и снег сохраняют.
         var pinned = now < slidingUntil ? pinnedDuringSlide : []
         pinned.insert(DockTracker.windowID)
+        for window in windows where window.isDesktopIcon { pinned.insert(window.id) }
         // Здесь снег не сыплем: окна уже другие, и частицы упали бы поверх нового стола.
         for (id, cap) in caps where !pinned.contains(id) { cap.clear() }
         pendingClosed.removeAll()

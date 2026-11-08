@@ -15,7 +15,7 @@ final class CornerProber {
 
     func update(windows: [TrackedWindow]) {
         guard !isRunning, CGPreflightScreenCaptureAccess() else { return }
-        let pending = windows.filter { $0.holdsSnow && !$0.isDock && !measured.contains($0.id) }
+        let pending = windows.filter { $0.holdsSnow && !$0.isFixedSurface && !measured.contains($0.id) }
         guard !pending.isEmpty else { return }
         isRunning = true
         let batch = Array(pending.prefix(4))
