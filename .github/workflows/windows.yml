@@ -1,0 +1,17 @@
+name: Windows
+on:
+  push:
+    branches: [windows]
+    paths: ["windows/**", ".github/workflows/windows.yml"]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release --locked
+        working-directory: windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Sugrob-spike
+          path: windows/target/release/Sugrob.exe
