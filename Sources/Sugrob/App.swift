@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var cornerProber = CornerProber(caps: caps)
     private let updater = Updater()
     private var cornerTimer: Timer?
+    private var permissionState: [Bool] = []
     private lazy var governor = PowerGovernor(settings: settings, tracker: tracker)
     private var renderer: Renderer!
     private var overlays: [OverlayWindow] = []
@@ -71,7 +72,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
         cornerTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, !self.governor.isPaused else { return }
+                guard let self else { return }
+                self.refreshPermissions()
+                guard !self.governor.isPaused else { return }
                 self.cornerProber.update(windows: self.tracker.snapshot.windows)
             }
         }
@@ -98,6 +101,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
             item.target = self
             item.state = isOn ? .on : .off
+        }
+
+        let hasAccessibility = AXIsProcessTrusted()
+        let hasScreenCapture = CGPreflightScreenCaptureAccess()
+        permissionState = [hasAccessibility, hasScreenCapture]
+        statusItem.button?.title = hasAccessibility && hasScreenCapture ? "❄︎" : "❄︎ !"
+        if !hasAccessibility {
+            menu.addItem(withTitle: "Разрешить: снег на Dock и папках…", action: #selector(openAccessibilitySettings), keyEquivalent: "").target = self
+        }
+        if !hasScreenCapture {
+            menu.addItem(withTitle: "Разрешить: точные углы окон…", action: #selector(openScreenCaptureSettings), keyEquivalent: "").target = self
+        }
+        if !hasAccessibility || !hasScreenCapture {
+            menu.addItem(withTitle: "Перезапустить Сугроб", action: #selector(relaunch), keyEquivalent: "").target = self
+            menu.addItem(.separator())
         }
 
         toggle("Снег", settings.enabled, #selector(toggleEnabled))
@@ -128,6 +146,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(withTitle: "Выйти", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem.menu = menu
+    }
+
+    @objc private func openAccessibilitySettings() {
+        openPrivacyPane("Privacy_Accessibility")
+    }
+
+    @objc private func openScreenCaptureSettings() {
+        openPrivacyPane("Privacy_ScreenCapture")
+    }
+
+    private func openPrivacyPane(_ pane: String) {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?\(pane)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Разрешение на запись экрана начинает действовать только после перезапуска.
+    @objc private func relaunch() {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", "sleep 0.7; open \"$0\"", Bundle.main.bundlePath]
+        guard (try? process.run()) != nil else { return }
+        NSApp.terminate(nil)
+    }
+
+    /// Разрешения выдаются в Настройках: меню следит за ними само.
+    private func refreshPermissions() {
+        let current = [AXIsProcessTrusted(), CGPreflightScreenCaptureAccess()]
+        guard current != permissionState else { return }
+        let gotScreenCapture = permissionState.count == 2 && !permissionState[1] && current[1]
+        if gotScreenCapture {
+            relaunch()
+        } else {
+            rebuildMenu()
+        }
     }
 
     @objc private func checkUpdates() {
