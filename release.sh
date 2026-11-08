@@ -20,7 +20,8 @@ fi
 UNIVERSAL=1 ./build.sh
 rm -f build/Sugrob.zip
 ditto -c -k --keepParent build/Sugrob.app build/Sugrob.zip
+./make-dmg.sh
 
 git push
-gh release create "v$VERSION" build/Sugrob.zip --title "Сугроб $VERSION" --notes "$NOTES"
+gh release create "v$VERSION" build/Sugrob.zip build/Sugrob.dmg --title "Сугроб $VERSION" --notes "$NOTES"
 echo "Выпущено: v$VERSION"
