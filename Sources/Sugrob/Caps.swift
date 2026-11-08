@@ -54,10 +54,13 @@ private final class SnowCap {
     static let step: Float = 2
     /// Настоящий радиус угла, если удалось измерить. Без него снег лежит только на ровном участке края.
     private(set) var cornerRadius: Float?
-    private var snowStart: Float { cornerRadius.map { $0 * 0.36 } ?? 16 }
+    private var snowStart: Float {
+        guard let cornerRadius else { return 16 }
+        return cornerRadius < 6 ? cornerRadius * 0.36 : cornerRadius * 0.05
+    }
     private var snowTaper: Float {
         guard let cornerRadius else { return 10 }
-        return cornerRadius < 6 ? 6 : 14
+        return cornerRadius < 6 ? 6 : cornerRadius * 0.6
     }
     /// Предел высоты снега: на маленькой иконке сугроб ниже.
     private var heightLimit: Float = .infinity
@@ -200,6 +203,15 @@ private final class SnowCap {
         let edge = min(u, width - u)
         let t = max(0, min(1, (edge - snowStart) / snowTaper))
         return (1 - (1 - t) * (1 - t)).squareRoot()
+    }
+
+    /// Куда откладывается толщина снега: на дуге угла снег обтекает окно по нормали.
+    func surfaceNormal(atLocal u: Float) -> SIMD2<Float> {
+        guard surfaceProfile == nil, let radius = cornerRadius, radius >= 6 else { return SIMD2(0, 1) }
+        let edge = max(0, min(u, width - u))
+        guard edge < radius else { return SIMD2(0, 1) }
+        let sine = (radius - edge) / radius
+        return SIMD2((u < width / 2 ? -1 : 1) * sine, (1 - sine * sine).squareRoot())
     }
 
     func canHoldSnow(atLocal u: Float) -> Bool {
@@ -1072,8 +1084,11 @@ final class CapField {
                     let u = min(Float(index) * SnowCap.step, width)
                     let h = cap.surfaceHeight(at: index)
                     let base = y + cap.baseDrop(atLocal: u)
-                    vertices[used] = CapVertex(position: SIMD4(x + u, base - h - 1, -1, u), thickness: h)
-                    vertices[used + 1] = CapVertex(position: SIMD4(x + u, base + 1, h + 1, u), thickness: h)
+                    let normal = cap.surfaceNormal(atLocal: u)
+                    vertices[used] = CapVertex(
+                        position: SIMD4(x + u + normal.x * (h + 1), base - normal.y * (h + 1), -1, u), thickness: h)
+                    vertices[used + 1] = CapVertex(
+                        position: SIMD4(x + u - normal.x, base + normal.y, h + 1, u), thickness: h)
                     used += 2
                 }
                 draw.vertexCount = cap.count * 2

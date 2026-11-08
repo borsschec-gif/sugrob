@@ -428,6 +428,8 @@ final class Renderer {
                 caps.stepDebris(now: Double(time))
             }
         }
+        simulate(frames: 1, windows: initial)
+        for item in initial { caps.setCornerRadius(Float([28, 27, 20, 14][Int(item.id) % 4]), for: item.id) }
         simulate(frames: 900, windows: initial)
         simulate(frames: 1800, windows: [opened] + initial)
         var windows = [opened] + initial
