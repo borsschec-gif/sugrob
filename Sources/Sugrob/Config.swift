@@ -26,6 +26,12 @@ enum Config {
     static let snapshotBall = env["SUGROB_SNAPSHOT_BALL"] != nil
     /// В отладочном кадре показать бросок снежка.
     static let snapshotThrow = env["SUGROB_SNAPSHOT_THROW"] != nil
+    /// В отладочном кадре показать крышку: `shake` — рывок, `tilt` — наклон вперёд.
+    static let snapshotLid = env["SUGROB_SNAPSHOT_LID"]
+    /// Сколько секунд должен проспать экран, чтобы его занесло снегом.
+    static let sheetMinSleep = TimeInterval(env["SUGROB_SHEET_SLEEP"] ?? "") ?? 30 * 60
+    /// В отладочном кадре показать занесённый экран: `full`, `wiped` или `shaken`.
+    static let snapshotSheet = env["SUGROB_SNAPSHOT_SHEET"]
     /// В отладочном кадре показать Деда Мороза.
     static let snapshotSanta = env["SUGROB_SNAPSHOT_SANTA"] != nil
 }

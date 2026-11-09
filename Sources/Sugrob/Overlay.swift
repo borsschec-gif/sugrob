@@ -37,6 +37,10 @@ final class OverlayView: NSView {
     private let primaryHeight: CGFloat
     var santa: SantaController?
     var governor: PowerGovernor?
+    var lid: LidSensor?
+    private let sheet: SnowSheet?
+    private let isBuiltIn: Bool
+    private let screenBounds: CGRect
     private let metalLayer = CAMetalLayer()
     private var field: SnowField
     private let ring: FrameRing?
@@ -53,7 +57,11 @@ final class OverlayView: NSView {
         self.renderer = renderer
         primaryHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
         screenOrigin = CGPoint(x: screen.frame.minX, y: primaryHeight - screen.frame.maxY)
+        screenBounds = CGRect(origin: screenOrigin, size: screen.frame.size)
+        let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+        isBuiltIn = displayID.map { CGDisplayIsBuiltin($0) != 0 } ?? false
         field = SnowField(width: Float(screen.frame.width), height: Float(screen.frame.height), seed: seed)
+        sheet = SnowSheet(device: renderer.device, width: Float(screen.frame.width), height: Float(screen.frame.height), seed: seed)
         ring = FrameRing(device: renderer.device, flakeCapacity: field.instanceCount + CapField.maxDebris)
         super.init(frame: CGRect(origin: .zero, size: screen.frame.size))
         wantsLayer = true
@@ -85,6 +93,14 @@ final class OverlayView: NSView {
         link?.isPaused = paused
     }
 
+    func coverWithSnow() {
+        sheet?.cover()
+    }
+
+    func clearSnowCover() {
+        sheet?.clear()
+    }
+
     func takeFrameCount() -> Int {
         defer { frameCount = 0 }
         return frameCount
@@ -102,11 +118,26 @@ final class OverlayView: NSView {
         field.density = governor?.density ?? 1
         let origin = SIMD2(Float(screenOrigin.x), Float(screenOrigin.y))
         caps.sync(snapshot, now: link.timestamp)
-        field.step(dt: Float(dt), time: time, caps: caps, origin: origin, now: link.timestamp)
+        var kick: Float = 0
+        if isBuiltIn, let lid {
+            if let state = lid.tick(now: link.timestamp) {
+                caps.applyLid(state, on: screenBounds, now: link.timestamp)
+                sheet?.applyLid(state, caps: caps, origin: origin)
+            }
+            kick = lid.flakeKick
+        }
+        field.step(dt: Float(dt), time: time, caps: caps, origin: origin, now: link.timestamp, kick: kick)
         caps.relax(now: link.timestamp)
         // NSEvent не ходит за курсором в WindowServer, в отличие от CGEvent.
         let mouse = NSEvent.mouseLocation
-        caps.brush(cursor: CGPoint(x: mouse.x, y: primaryHeight - mouse.y), now: link.timestamp)
+        let cursor = CGPoint(x: mouse.x, y: primaryHeight - mouse.y)
+        // Пока экран занесён, курсор счищает снег, а не катает снежок.
+        if let sheet, sheet.isActive {
+            sheet.wipe(to: SIMD2(Float(cursor.x), Float(cursor.y)) - origin, caps: caps, origin: origin)
+            sheet.step()
+        } else {
+            caps.brush(cursor: cursor, now: link.timestamp)
+        }
         caps.stepDebris(now: link.timestamp)
         santa?.tick(now: link.timestamp)
 
@@ -123,7 +154,8 @@ final class OverlayView: NSView {
                 viewport: SIMD2(Float(bounds.width), Float(bounds.height)),
                 origin: origin,
                 debugRects: Config.debugOverlay ? debugRects(from: snapshot) : [],
-                santa: santa?.drawItem(origin: origin)),
+                santa: santa?.drawItem(origin: origin),
+                sheet: sheet?.isActive == true ? sheet?.texture : nil),
             ring: ring, into: metalLayer)
         frameCount += 1
     }

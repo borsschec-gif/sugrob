@@ -45,6 +45,7 @@ struct SceneInput {
     var origin: SIMD2<Float>
     var debugRects: [RectInstance]
     var santa: SantaDraw? = nil
+    var sheet: MTLTexture? = nil
 }
 
 @MainActor
@@ -57,6 +58,7 @@ final class Renderer {
     private let erasePipeline: MTLRenderPipelineState
     private let ballPipeline: MTLRenderPipelineState
     private let spritePipeline: MTLRenderPipelineState
+    private let sheetPipeline: MTLRenderPipelineState
     private var santaFrames: [MTLTexture] = []
 
     // Шейдеры собираются при запуске: утилиты metal в Command Line Tools нет.
@@ -194,6 +196,30 @@ final class Renderer {
         return sprite.sample(linear, in.uv);
     }
 
+    // Сплошной снег: край рваный от шума, в глубине плотнее и светлее.
+    fragment float4 sheetFragment(SpriteOut in [[stage_in]], texture2d<float> mask [[texture(0)]],
+                                  constant float2 &size [[buffer(1)]], constant float &time [[buffer(0)]]) {
+        constexpr sampler linear(filter::linear, address::clamp_to_edge);
+        float m = mask.sample(linear, in.uv).r;
+        if (m < 0.01) { discard_fragment(); }
+        float2 p = in.uv * size;
+        float grain = valueNoise(p * 0.05) * 0.6 + valueNoise(p * 0.17) * 0.4;
+        float edge = m + (grain - 0.5) * 0.35;
+        float a = smoothstep(0.33, 0.5, edge);
+        float depth = smoothstep(0.5, 0.95, edge);
+
+        float3 lit = float3(0.96, 0.98, 1.0);
+        float3 shade = float3(0.66, 0.74, 0.92);
+        float drift = valueNoise(p * 0.009) * 0.6 + valueNoise(p * 0.025) * 0.4;
+        float3 color = mix(shade, lit, saturate(depth * 0.55 + drift * 0.45 + (grain - 0.5) * 0.14));
+
+        float2 scaled = p * 0.4;
+        float seed = hash(floor(scaled));
+        float roundness = 1 - smoothstep(0.1, 0.5, length(fract(scaled) - 0.5));
+        color += step(0.992, seed) * roundness * pow(max(0.0, sin(time * 2.0 + seed * 200.0)), 8.0) * 0.7 * depth;
+        return float4(saturate(color) * a, a);
+    }
+
     struct BallOut { float4 position [[position]]; float2 uv; };
 
     vertex BallOut ballVertex(uint v [[vertex_id]],
@@ -252,7 +278,8 @@ final class Renderer {
               let capPipeline = Self.makePipeline(device, library, vertex: "capVertex", fragment: "capFragment"),
               let erasePipeline = Self.makePipeline(device, library, vertex: "eraseVertex", fragment: "eraseFragment", erases: true),
               let ballPipeline = Self.makePipeline(device, library, vertex: "ballVertex", fragment: "ballFragment"),
-              let spritePipeline = Self.makePipeline(device, library, vertex: "spriteVertex", fragment: "spriteFragment")
+              let spritePipeline = Self.makePipeline(device, library, vertex: "spriteVertex", fragment: "spriteFragment"),
+              let sheetPipeline = Self.makePipeline(device, library, vertex: "spriteVertex", fragment: "sheetFragment")
         else { return nil }
         self.device = device
         self.queue = queue
@@ -262,6 +289,7 @@ final class Renderer {
         self.erasePipeline = erasePipeline
         self.ballPipeline = ballPipeline
         self.spritePipeline = spritePipeline
+        self.sheetPipeline = sheetPipeline
         santaFrames = (0..<SantaArt.frameCount).compactMap { makeSantaTexture(frame: $0) }
     }
 
@@ -385,6 +413,15 @@ final class Renderer {
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
 
+        if let sheet = scene.sheet {
+            var rect = SIMD4<Float>(0, 0, viewport.x, viewport.y)
+            encoder.setRenderPipelineState(sheetPipeline)
+            encoder.setVertexBytes(&rect, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
+            encoder.setFragmentBytes(&viewport, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
+            encoder.setFragmentTexture(sheet, index: 0)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        }
+
         encoder.setRenderPipelineState(flakePipeline)
         encoder.setVertexBuffer(flakes, offset: 0, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: flakeCount)
@@ -501,6 +538,43 @@ final class Renderer {
             // Дать снегу долететь до окна ниже.
             simulate(frames: 45, windows: windows)
         }
+        if let mode = Config.snapshotLid {
+            // Те же расчёты, что на настоящей крышке, только углы заданы вручную.
+            let screen = CGRect(x: 0, y: 0, width: width, height: height)
+            var motion = LidMotion()
+            var angle: Float = 110
+            let frames = mode == "shake" ? 12 : 40
+            for frame in 0..<frames {
+                if mode == "shake" {
+                    if frame < 6 { angle -= 14 }
+                } else {
+                    angle = max(60, angle - 3)
+                }
+                let state = motion.add(angle: angle, time: Double(time))
+                caps.applyLid(state, on: screen, now: Double(time))
+                simulate(frames: 1, windows: windows)
+            }
+        }
+        var sheet: SnowSheet?
+        if let mode = Config.snapshotSheet {
+            sheet = SnowSheet(device: device, width: Float(width), height: Float(height), seed: 5)
+            sheet?.cover()
+            if mode == "wiped" {
+                // Курсор прошёл по экрану дугой.
+                for step in 0...40 {
+                    let t = Float(step) / 40
+                    sheet?.wipe(to: SIMD2(250 + t * 900, 520 - sin(t * 3.14) * 300), caps: caps, origin: .zero)
+                    simulate(frames: 1, windows: windows)
+                }
+            }
+            if mode == "shaken" {
+                for _ in 0..<4 {
+                    sheet?.applyLid(LidState(angle: 100, speed: 170, shake: 0.55, dt: dt), caps: caps, origin: .zero)
+                    simulate(frames: 1, windows: windows)
+                }
+            }
+            sheet?.step()
+        }
         if Config.snapshotSlide {
             // Все окна уехали одинаково, как при смене Space: снег срывается и падает.
             windows = windows.map { window(CGWindowID($0.id), $0.frame.minX - 60, $0.frame.minY, $0.frame.width, $0.frame.height) }
@@ -522,7 +596,8 @@ final class Renderer {
 
         let scene = SceneInput(
             time: time, viewport: SIMD2(Float(width), Float(height)), origin: .zero, debugRects: [],
-            santa: Config.snapshotSanta ? SantaDraw(rect: SIMD4(620, 770, 420, 152), frame: 0) : nil)
+            santa: Config.snapshotSanta ? SantaDraw(rect: SIMD4(620, 770, 420, 152), frame: 0) : nil,
+            sheet: sheet?.texture)
         let flakePointer = flakes.contents().assumingMemoryBound(to: FlakeInstance.self)
         let flakeCount = field.writeInstances(to: flakePointer, time: time)
         let debrisCount = caps.writeDebris(to: flakePointer + flakeCount, origin: .zero, viewport: scene.viewport)

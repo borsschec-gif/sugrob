@@ -9,8 +9,18 @@ final class Settings {
     init() {
         defaults.register(defaults: [
             "enabled": true, "intensity": 1.0, "cursorEffects": true, "santa": true,
-            "pauseInEditors": true, "batterySaving": false,
+            "pauseInEditors": true, "batterySaving": false, "lidEffects": true, "coverAfterSleep": true,
         ])
+    }
+
+    var coverAfterSleep: Bool {
+        get { defaults.bool(forKey: "coverAfterSleep") }
+        set { defaults.set(newValue, forKey: "coverAfterSleep") }
+    }
+
+    var lidEffects: Bool {
+        get { defaults.bool(forKey: "lidEffects") }
+        set { defaults.set(newValue, forKey: "lidEffects") }
     }
 
     var enabled: Bool {
@@ -57,6 +67,9 @@ final class PowerGovernor {
     private(set) var fps: Float = Config.fps
     private(set) var density: Float = 1
     var onPauseChange: ((Bool) -> Void)?
+    /// Экран проснулся; аргумент — сколько секунд он спал.
+    var onScreensWoke: ((TimeInterval) -> Void)?
+    private var sleptAt: Date?
 
     init(settings: Settings, tracker: WindowTracker) {
         self.settings = settings
@@ -76,11 +89,14 @@ final class PowerGovernor {
 
     @objc private func screensSlept() {
         isScreenAsleep = true
+        if sleptAt == nil { sleptAt = Date() }
         evaluate()
     }
 
     @objc private func screensWoke() {
         isScreenAsleep = false
+        if let sleptAt { onScreensWoke?(Date().timeIntervalSince(sleptAt)) }
+        sleptAt = nil
         evaluate()
     }
 

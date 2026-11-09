@@ -283,6 +283,41 @@ private final class SnowCap {
         clear()
     }
 
+    /// Крышку качнули или наклонили: с шапки срывается доля снега. Единица снимает всё.
+    func shake(
+        windowOrigin: SIMD2<Float>, fraction: Float, toss: Float, into debris: inout [SnowDebris], limit: Int,
+        using generator: inout SeededGenerator, isVisible: (SIMD2<Float>) -> Bool
+    ) {
+        for index in heights.indices where heights[index] > 0 {
+            let visible = surfaceHeight(at: index)
+            // Неравномерно: снег отваливается кусками, а не тает ровным слоем.
+            let part = fraction >= 1 ? 1 : min(1, fraction * Float.random(in: 0.3...1.7, using: &generator))
+            var taken = heights[index] * part
+            if heights[index] - taken < 0.3 { taken = heights[index] }
+            heights[index] -= taken
+
+            let share = taken / 4
+            let count = Int(share) + (Float.random(in: 0...1, using: &generator) < share - Float(Int(share)) ? 1 : 0)
+            guard count > 0, visible > 0.5 else { continue }
+            let u = Float(index) * Self.step
+            let baseY = windowOrigin.y + baseDrop(atLocal: u)
+            guard isVisible(SIMD2(windowOrigin.x + u, baseY - visible / 2)) else { continue }
+            for _ in 0..<count where debris.count < limit {
+                debris.append(SnowDebris(
+                    position: SIMD2(
+                        windowOrigin.x + u + Float.random(in: -2...2, using: &generator),
+                        baseY - Float.random(in: 0...visible, using: &generator)),
+                    velocity: SIMD2(
+                        Float.random(in: -50...50, using: &generator),
+                        toss * Float.random(in: 0.3...1, using: &generator) + Float.random(in: -20...30, using: &generator)),
+                    radius: Float.random(in: 1.8...4.6, using: &generator),
+                    alpha: Float.random(in: 0.75...1, using: &generator),
+                    life: Float.random(in: 0.9...1.6, using: &generator),
+                    gravity: 1300))
+            }
+        }
+    }
+
     /// Окно тащат вбок: с отстающего края шапки снег сыплется тонкой струйкой.
     func shedTrailingEdge(
         windowOrigin: SIMD2<Float>, fromLeft: Bool, distance: Float, into debris: inout [SnowDebris], limit: Int,
@@ -457,6 +492,12 @@ final class CapField {
     /// Сколько после последнего сдвига хлопья не садятся на окна.
     private static let slideHold: CFTimeInterval = 0.3
 
+    /// Полный срыв шапок не чаще этого, иначе снег не успевает появиться снова.
+    private static let lidFullShedCooldown: CFTimeInterval = 0.5
+
+    private var lidSlip: Float = 0
+    private var lidScreen = CGRect.null
+    private var lidFullShedUntil: CFTimeInterval = 0
     private var caps: [CGWindowID: SnowCap] = [:]
     private var windows: [TrackedWindow] = []
     private var debris: [SnowDebris] = []
@@ -709,6 +750,47 @@ final class CapField {
                 return !list[..<index].contains { $0.frame.contains(location) }
             }
         }
+    }
+
+    /// Крышка наклоняет только встроенный экран: снег на внешнем мониторе лежит.
+    func applyLid(_ state: LidState, on screen: CGRect, now: CFTimeInterval) {
+        lidSlip = state.slip
+        lidScreen = screen
+        // Плавный старт: чуть за вертикалью снег только подрагивает, у 45° уходит за полсекунды.
+        let slipFraction = 3 * state.slip * state.slip * state.dt
+        guard state.shake > 0 || slipFraction > 0 else { return }
+
+        let isFull = state.shake >= 1 && now >= lidFullShedUntil
+        if isFull { lidFullShedUntil = now + Self.lidFullShedCooldown }
+        let fraction = isFull ? 1 : min(1, state.shake * 0.12 + slipFraction)
+        // Рывок вверх подбрасывает снег относительно экрана, рывок вниз прижимает.
+        let toss = max(-260, min(260, state.speed * 0.7)) * min(1, state.shake * 2)
+        for (index, window) in windows.enumerated() where window.holdsSnow {
+            guard screen.contains(CGPoint(x: window.frame.midX, y: window.frame.minY)),
+                  let cap = caps[window.id] else { continue }
+            let firstNew = debris.count
+            let front = windows[..<index]
+            cap.shake(
+                windowOrigin: SIMD2(Float(window.frame.minX), Float(window.frame.minY)),
+                fraction: fraction, toss: toss, into: &debris, limit: Self.maxDebris, using: &generator
+            ) { point in
+                let location = CGPoint(x: CGFloat(point.x), y: CGFloat(point.y))
+                return !front.contains { $0.frame.contains(location) }
+            }
+            markSource(window.id, from: firstNew)
+            cap.activeUntil = now + 3
+        }
+    }
+
+    /// Кусок снега, сорвавшийся со сплошного слоя на экране.
+    func addFallingSnow(at position: SIMD2<Float>, velocity: SIMD2<Float>) {
+        guard debris.count < Self.maxDebris else { return }
+        debris.append(SnowDebris(
+            position: position, velocity: velocity,
+            radius: Float.random(in: 1.8...4.6, using: &generator),
+            alpha: Float.random(in: 0.75...1, using: &generator),
+            life: Float.random(in: 0.9...1.6, using: &generator),
+            gravity: 1300))
     }
 
     /// Система сменила Space: на новом снег копится заново.
@@ -1081,6 +1163,9 @@ final class CapField {
 
             let point = CGPoint(x: CGFloat(x), y: CGFloat(surface))
             guard !windows[..<index].contains(where: { $0.frame.contains(point) }) else { continue }
+
+            // На наклонённом экране снегу не за что зацепиться.
+            if lidSlip > 0, lidScreen.contains(point), Float.random(in: 0...1, using: &generator) < lidSlip { continue }
 
             // Часть хлопьев пролетает дальше, иначе окна под верхним окном остались бы без снега.
             guard Float.random(in: 0...1, using: &generator) < chance else { continue }

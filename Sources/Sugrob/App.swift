@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = Settings()
     private lazy var cornerProber = CornerProber(caps: caps)
     private let updater = Updater()
+    private lazy var lid = LidSensor()
     private var cornerTimer: Timer?
     private var permissionState: [Bool] = []
     private lazy var governor = PowerGovernor(settings: settings, tracker: tracker)
@@ -67,6 +68,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         caps.cursorEffectsEnabled = settings.cursorEffects
         santa.autoRides = settings.santa
+        lid.isEnabled = settings.lidEffects
+        governor.onScreensWoke = { [weak self] seconds in
+            guard let self else { return }
+            self.lid.hold(until: CACurrentMediaTime() + 3)
+            // Без курсора счистить снег было бы нечем.
+            guard self.settings.coverAfterSleep, self.settings.cursorEffects, seconds >= Config.sheetMinSleep else { return }
+            Log.shared.write(String(format: "sheet: спал %.0f с, экран занесён", seconds))
+            self.overlays.forEach { $0.overlayView.coverWithSnow() }
+        }
         governor.start()
         updater.start()
         if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
@@ -131,6 +141,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
         toggle("Стряхивание и снежок", settings.cursorEffects, #selector(toggleCursor))
+        if lid.isAvailable { toggle("Реакция на крышку", settings.lidEffects, #selector(toggleLid)) }
+        toggle("Заносить экран после сна", settings.coverAfterSleep, #selector(toggleCover))
         toggle("Дед Мороз", settings.santa, #selector(toggleSanta))
         menu.addItem(withTitle: "Позвать Деда Мороза", action: #selector(callSanta), keyEquivalent: "").target = self
 
@@ -189,6 +201,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func applySettings() {
         caps.cursorEffectsEnabled = settings.cursorEffects
         santa.autoRides = settings.santa
+        lid.isEnabled = settings.lidEffects
+        if !settings.coverAfterSleep || !settings.cursorEffects { overlays.forEach { $0.overlayView.clearSnowCover() } }
         governor.evaluate()
         rebuildMenu()
     }
@@ -205,6 +219,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleCursor() {
         settings.cursorEffects.toggle()
+        applySettings()
+    }
+
+    @objc private func toggleCover() {
+        settings.coverAfterSleep.toggle()
+        applySettings()
+    }
+
+    @objc private func toggleLid() {
+        settings.lidEffects.toggle()
         applySettings()
     }
 
@@ -256,6 +280,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlays.forEach {
             $0.overlayView.santa = santa
             $0.overlayView.governor = governor
+            $0.overlayView.lid = lid
             $0.setPaused(governor.isPaused)
         }
         Log.shared.write("overlays: \(overlays.count), level=\(overlays.first?.level.rawValue ?? -1)")

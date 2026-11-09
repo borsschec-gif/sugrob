@@ -106,7 +106,8 @@ struct SnowField {
 
     /// `origin` — левый верхний угол экрана в координатах CoreGraphics.
     @MainActor
-    mutating func step(dt: Float, time: Float, caps: CapField, origin: SIMD2<Float>, now: CFTimeInterval) {
+    /// `kick` — толчок от крышки по вертикали, pt/s.
+    mutating func step(dt: Float, time: Float, caps: CapField, origin: SIMD2<Float>, now: CFTimeInterval, kick: Float = 0) {
         let wind = Self.wind(at: time)
         let visibleRank = visibleRank
         for index in flakes.indices where flakes[index].rank <= visibleRank {
@@ -115,7 +116,7 @@ struct SnowField {
             let sway = cos(time * flake.swayRate + flake.phase) * flake.swayAmplitude
             let previousY = flake.y
             flake.x += (wind * layer.parallax + sway) * dt
-            flake.y += flake.fallSpeed * dt
+            flake.y += (flake.fallSpeed + kick * layer.parallax) * dt
 
             let landed = layer.deposit > 0 && caps.tryLand(
                 x: flake.x + origin.x, fromY: previousY + origin.y, toY: flake.y + origin.y,
