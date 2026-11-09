@@ -1,5 +1,5 @@
 # Устанавливает Сугроб для текущего пользователя, права администратора не нужны. Запуск:
-# irm https://raw.githubusercontent.com/borsschec-gif/sugrob/windows/windows/install.ps1 | iex
+# irm https://raw.githubusercontent.com/borsschec-gif/sugrob/main/windows/install.ps1 | iex
 # Всё внутри блока: exit и настройки не должны задеть окно PowerShell, из которого запустили.
 & {
     $ErrorActionPreference = 'Stop'

@@ -27,7 +27,7 @@ curl -fsSL https://raw.githubusercontent.com/borsschec-gif/sugrob/main/install.s
 Windows 10 версии 2004 или новее, права администратора не нужны. В PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/borsschec-gif/sugrob/windows/windows/install.ps1 | iex
+irm https://raw.githubusercontent.com/borsschec-gif/sugrob/main/windows/install.ps1 | iex
 ```
 
 Приложение ставится в `%LOCALAPPDATA%\Programs\Sugrob`, живёт в трее (❄︎) и обновляется само. Автозапуск включается в меню: «Запускать при входе». Сертификата подписи кода нет, поэтому SmartScreen может предупредить о файле, а обновления проверяются своей подписью ed25519. Релизы Windows выходят с тегами `win-v*` и никогда не становятся latest.
