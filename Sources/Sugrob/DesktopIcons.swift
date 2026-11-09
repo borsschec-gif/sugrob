@@ -24,7 +24,18 @@ final class DesktopIcons {
         return folders
     }
 
+    /// Иконки могут быть скрыты настройками, но Finder всё равно сообщает их координаты.
+    private static var areIconsHidden: Bool {
+        func flag(_ key: String, in domain: String) -> Bool? {
+            CFPreferencesAppSynchronize(domain as CFString)
+            return CFPreferencesCopyAppValue(key as CFString, domain as CFString) as? Bool
+        }
+        return flag("StandardHideDesktopIcons", in: "com.apple.WindowManager") == true
+            || flag("CreateDesktop", in: "com.apple.finder") == false
+    }
+
     private func readFolders() -> [TrackedWindow]? {
+        if Self.areIconsHidden { return [] }
         guard AXIsProcessTrusted(),
               let finder = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first
         else { return nil }
