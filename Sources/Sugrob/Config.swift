@@ -24,6 +24,8 @@ enum Config {
     static let snapshotBrush = env["SUGROB_SNAPSHOT_BRUSH"] != nil
     /// В отладочном кадре показать снежок.
     static let snapshotBall = env["SUGROB_SNAPSHOT_BALL"] != nil
+    /// В отладочном кадре показать бросок снежка.
+    static let snapshotThrow = env["SUGROB_SNAPSHOT_THROW"] != nil
     /// В отладочном кадре показать Деда Мороза.
     static let snapshotSanta = env["SUGROB_SNAPSHOT_SANTA"] != nil
 }

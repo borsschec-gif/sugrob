@@ -440,6 +440,21 @@ final class Renderer {
                 simulate(frames: 1, windows: windows)
             }
         }
+        if Config.snapshotThrow {
+            // Снежок скатали и бросили взмахом вверх-вправо.
+            for step in 0...110 {
+                caps.brush(cursor: CGPoint(x: 580 + CGFloat(step) * 1, y: 172), now: Double(time))
+                simulate(frames: 1, windows: windows)
+            }
+            for step in 1...8 {
+                caps.brush(cursor: CGPoint(x: 690 + CGFloat(step) * 45, y: 172 - CGFloat(step) * 10), now: Double(time))
+                simulate(frames: 1, windows: windows)
+            }
+            for step in 1...6 {
+                caps.brush(cursor: CGPoint(x: 1050 + CGFloat(step), y: 92), now: Double(time))
+                simulate(frames: 1, windows: windows)
+            }
+        }
         if Config.snapshotBrush {
             // Курсор провели сквозь шапку окна 1 слева направо.
             for step in 0...12 {

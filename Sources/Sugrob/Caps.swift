@@ -449,6 +449,9 @@ final class CapField {
     /// Медленнее этого курсор скатывает снежок, а не стряхивает снег.
     private static let minBrushSpeed: Float = 60
     private static let maxBallRadius: Float = 34
+    /// С какой скорости движение курсора считается взмахом, pt/s.
+    private static let throwSpeed: Float = 700
+    private static let maxThrowSpeed: Float = 3500
     /// Меньший сдвиг за опрос считаем обычным движением окна, а не сменой Space.
     private static let slideThreshold: CGFloat = 12
     /// Сколько после последнего сдвига хлопья не садятся на окна.
@@ -472,6 +475,7 @@ final class CapField {
     private var dwellTime: Float = 0
     private var dwellPath: Float = 0
     private var smoothedCursorSpeed: Float = 0
+    private var flickVelocity = SIMD2<Float>.zero
     private var lastSync: CFTimeInterval = -1
     private var lastRelax: CFTimeInterval = 0
     private var hasSeeded = false
@@ -756,8 +760,14 @@ final class CapField {
         // На малой скорости курсор идёт рывками, поэтому порог сравнивается со сглаженной скоростью.
         smoothedCursorSpeed += (speed - smoothedCursorSpeed) * min(1, interval * 8)
 
+        flickVelocity += (velocity - flickVelocity) * min(1, interval * 20)
+
         if ball?.windowID != nil {
-            rollBall(cursor: cursor, dt: interval, now: now)
+            if simd_length(flickVelocity) >= Self.throwSpeed {
+                throwBall(velocity: flickVelocity, now: now)
+            } else {
+                rollBall(cursor: cursor, dt: interval, now: now)
+            }
             return
         }
         if ball == nil, startBallIfDwelling(cursor: cursor, speed: smoothedCursorSpeed, distance: distance, dt: interval) { return }
@@ -886,6 +896,19 @@ final class CapField {
         if isCovered || Float(cursor.y) < minY - reach || Float(cursor.y) > minY + 30 {
             releaseBall()
         }
+    }
+
+    /// Взмах курсора бросает снежок: дальность зависит от скорости взмаха.
+    private func throwBall(velocity: SIMD2<Float>, now: CFTimeInterval) {
+        guard var current = ball, let id = current.windowID else { return }
+        let speed = simd_length(velocity)
+        current.velocity = velocity * 0.85 * min(1, Self.maxThrowSpeed / speed)
+        current.droppedFrom = id
+        current.windowID = nil
+        ball = current
+        spawnPuff(
+            at: SIMD2(current.position.x, current.position.y + current.radius),
+            count: Int(current.radius), speed: 20...110, lift: 30...150, life: 0.3...0.6)
     }
 
     private func releaseBall() {
