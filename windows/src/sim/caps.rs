@@ -27,7 +27,7 @@ pub struct CapDraw {
     pub corner_radius: f32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TrackedWindow {
     pub id: u64,
     pub frame: Rect,
@@ -37,10 +37,17 @@ pub struct TrackedWindow {
     pub holds_snow: bool,
     /// Панель задач, замена Dock.
     pub is_dock: bool,
+    /// Панель автоскрылась за нижний край своего монитора.
+    pub is_dock_hidden: bool,
     pub is_desktop_icon: bool,
     /// Радиус углов, который сообщила система.
     pub corner_radius: Option<f32>,
     pub top_profile: Option<Vec<f32>>,
+}
+
+/// Скрытая панель задач оставляет на краю своего монитора полоску в пару точек.
+pub fn dock_is_hidden(top: f32, monitor_bottom: f32) -> bool {
+    top >= monitor_bottom - 3.0
 }
 
 impl TrackedWindow {
@@ -56,7 +63,7 @@ pub struct Snapshot {
     pub windows: Vec<TrackedWindow>,
     pub is_mouse_down: bool,
     pub cursor: V2,
-    /// Нижний край основного экрана.
+    /// Нижний край всех мониторов: ниже снежку падать некуда.
     pub screen_bottom: f32,
 }
 
@@ -547,6 +554,8 @@ pub struct CapField {
     last_sync: f64,
     last_relax: f64,
     has_seeded: bool,
+    /// Первый список папок приходит из своего потока, позже первого снимка окон.
+    has_seeded_folders: bool,
     screen_bottom: f32,
     rng: Rng,
 }
@@ -572,6 +581,7 @@ impl CapField {
             last_sync: -1.0,
             last_relax: 0.0,
             has_seeded: false,
+            has_seeded_folders: false,
             screen_bottom: f32::INFINITY,
             rng: Rng(seed),
         }
@@ -610,11 +620,14 @@ impl CapField {
                 cap.last_seen = now;
                 if !window.is_desktop_icon {
                     cap.corner_radius = window.corner_radius;
+                } else if cap.surface_profile != window.top_profile {
+                    // Размер значков поменяли: контур другой.
+                    cap.surface_profile = window.top_profile.clone();
                 }
             } else {
                 let phases = v2(self.rng.range(0.0, 6.28), self.rng.range(0.0, 6.28));
                 let mut cap = SnowCap::new(window.frame.w, phases, now);
-                if first_batch {
+                if first_batch || (window.is_desktop_icon && !self.has_seeded_folders) {
                     cap.seed(&mut self.rng);
                 }
                 cap.corner_radius = window.corner_radius;
@@ -627,6 +640,7 @@ impl CapField {
                 self.caps.insert(window.id, cap);
             }
         }
+        self.has_seeded_folders |= windows.iter().any(|w| w.is_desktop_icon);
         self.windows = windows;
         if first_batch {
             self.has_seeded = true;
@@ -1010,6 +1024,26 @@ impl CapField {
         cap.active_until = now + 3.0;
     }
 
+    /// Панель задач основного экрана, если она лежит вдоль его низа.
+    pub fn dock_frame(&self, screen: Rect) -> Option<Rect> {
+        self.windows.iter().find(|w| w.is_dock && w.frame.x < screen.max_x() && w.frame.max_x() > screen.x && w.frame.max_y() >= screen.max_y() - 1.0 && w.frame.y < screen.max_y() + 1.0).map(|w| w.frame)
+    }
+
+    /// Облачко снега: из-под полоза и из открытого подарка.
+    pub fn spawn_puff(&mut self, center: V2, count: usize, speed: (f32, f32), lift: (f32, f32), life: (f32, f32)) {
+        for _ in 0..count {
+            if self.debris.len() >= MAX_DEBRIS {
+                break;
+            }
+            let rng = &mut self.rng;
+            let side = if rng.flip() { 1.0 } else { -1.0 };
+            let position = center.plus(v2(rng.range(-14.0, 14.0), rng.range(-8.0, 8.0)));
+            let velocity = v2(side * rng.range(speed.0, speed.1), -rng.range(lift.0, lift.1));
+            let (radius, alpha, life) = (rng.range(1.4, 3.6), rng.range(0.7, 1.0), rng.range(life.0, life.1));
+            self.debris.push(debris(position, velocity, radius, alpha, life, 900.0));
+        }
+    }
+
     pub fn step_debris(&mut self, now: f64) {
         let last = std::mem::replace(&mut self.last_debris_step, now);
         if now <= last || last <= 0.0 || self.debris.is_empty() {
@@ -1081,7 +1115,7 @@ impl CapField {
                 continue;
             }
             // Скрытая панель задач ушла за нижний край: на неё снег не садится.
-            if window.is_dock && window.frame.y >= self.screen_bottom - 3.0 {
+            if window.is_dock_hidden {
                 continue;
             }
             let frame = window.frame;
@@ -1151,11 +1185,44 @@ mod tests {
     use crate::sim::SnowField;
 
     fn window(id: u64, x: f32, y: f32, w: f32, h: f32) -> TrackedWindow {
-        TrackedWindow { id, frame: Rect { x, y, w, h }, owner: id as u32, holds_snow: true, is_dock: false, is_desktop_icon: false, corner_radius: Some(8.0), top_profile: None }
+        TrackedWindow { id, frame: Rect { x, y, w, h }, owner: id as u32, holds_snow: true, is_dock: false, is_dock_hidden: false, is_desktop_icon: false, corner_radius: Some(8.0), top_profile: None }
+    }
+
+    fn folder(id: u64) -> TrackedWindow {
+        TrackedWindow { is_desktop_icon: true, corner_radius: None, top_profile: Some(vec![0.0; 8]), ..window(id, 100.0, 100.0, 64.0, 64.0) }
     }
 
     fn snap(t: f64, windows: Vec<TrackedWindow>, down: bool, cursor: V2) -> Snapshot {
         Snapshot { timestamp: t, windows, is_mouse_down: down, cursor, screen_bottom: 1000.0 }
+    }
+
+    #[test]
+    fn folders_from_late_list_get_first_snow_once() {
+        let mut field = CapField::new(1);
+        field.sync(&snap(0.1, vec![window(1, 400.0, 300.0, 400.0, 300.0)], false, v2(0.0, 0.0)), 0.1);
+        field.sync(&snap(0.2, vec![window(1, 400.0, 300.0, 400.0, 300.0), folder(2)], false, v2(0.0, 0.0)), 0.2);
+        assert!(field.cap_volume(2).unwrap() > 0.0);
+        field.sync(&snap(0.3, vec![window(1, 400.0, 300.0, 400.0, 300.0), folder(2), folder(3)], false, v2(0.0, 0.0)), 0.3);
+        assert_eq!(field.cap_volume(3), Some(0.0));
+    }
+
+    #[test]
+    fn dock_below_primary_monitor_holds_snow_unless_hidden() {
+        let dock = |hidden| TrackedWindow { is_dock: true, is_dock_hidden: hidden, corner_radius: Some(0.0), ..window(1, 0.0, 2000.0, 1000.0, 48.0) };
+        let mut field = CapField::new(1);
+        field.sync(&snap(0.1, vec![dock(false)], false, v2(0.0, 0.0)), 0.1);
+        assert!(field.land(500.0, 1900.0, 2010.0, 1.0, 0.2, 1.0, 0, true));
+        let mut field = CapField::new(1);
+        field.sync(&snap(0.1, vec![dock(true)], false, v2(0.0, 0.0)), 0.1);
+        assert!(!field.land(500.0, 1900.0, 2010.0, 1.0, 0.2, 1.0, 0, true));
+    }
+
+    #[test]
+    fn hidden_dock_is_measured_by_its_own_monitor() {
+        assert!(dock_is_hidden(1438.0, 1440.0));
+        assert!(!dock_is_hidden(1392.0, 1440.0));
+        assert!(!dock_is_hidden(2552.0, 2600.0));
+        assert!(dock_is_hidden(-2.0, 0.0));
     }
 
     #[test]

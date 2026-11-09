@@ -2,9 +2,19 @@
 //! поэтому константы взяты оттуда без изменений. Физические пиксели Windows
 //! переводятся в точки делением на масштаб основного монитора.
 mod caps;
+mod folders;
+mod icon;
+mod pause;
+mod santa;
+mod santa_art;
 mod snow;
 
 pub use caps::*;
+pub use folders::*;
+pub use icon::*;
+pub use pause::*;
+pub use santa::*;
+pub use santa_art::*;
 pub use snow::*;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

@@ -2,18 +2,68 @@ name: Windows
 on:
   push:
     branches: [windows]
+    tags: ["win-v*"]
     paths: ["windows/**", ".github/workflows/windows.yml"]
   workflow_dispatch:
 jobs:
   build:
+    if: github.event_name == 'push' && github.ref_type == 'branch'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: cargo test --release --lib
         working-directory: windows
       - run: cargo build --release --locked
         working-directory: windows
-      - uses: actions/upload-artifact@v4
+      - name: Проверить, что exe не требует VC++ Redistributable
+        shell: pwsh
+        run: |
+          $bytes = [IO.File]::ReadAllBytes('windows/target/release/Sugrob.exe')
+          $text = [Text.Encoding]::ASCII.GetString($bytes)
+          if ($text.IndexOf('VCRUNTIME140', [StringComparison]::OrdinalIgnoreCase) -ge 0) { throw 'exe зависит от VCRUNTIME140.dll' }
+      - uses: actions/upload-artifact@v7
         with:
           name: Sugrob-spike
           path: windows/target/release/Sugrob.exe
+
+  # Релиз Windows никогда не должен стать latest: на него опирается установка на Mac.
+  release:
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v7
+      - name: Сверить тег и версию
+        run: |
+          $package = cargo metadata --no-deps --locked --format-version 1 | ConvertFrom-Json
+          $version = $package.packages[0].version
+          $tag = "win-v$version"
+          # Иначе программа каждые 6 часов будет ставить одну и ту же версию.
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne $tag) {
+            throw "Тег $env:GITHUB_REF_NAME не совпадает с версией $version в Cargo.toml"
+          }
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+          "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
+      - run: cargo test --release --lib
+      - run: cargo build --release --locked
+      - name: Проверить, что exe не требует VC++ Redistributable
+        shell: pwsh
+        run: |
+          $bytes = [IO.File]::ReadAllBytes('target/release/Sugrob.exe')
+          $text = [Text.Encoding]::ASCII.GetString($bytes)
+          if ($text.IndexOf('VCRUNTIME140', [StringComparison]::OrdinalIgnoreCase) -ge 0) { throw 'exe зависит от VCRUNTIME140.dll' }
+      - run: cargo build --locked --example update_sign
+      - name: Подписать
+        env:
+          SUGROB_UPDATE_KEY: ${{ secrets.SUGROB_UPDATE_KEY }}
+        run: target/debug/examples/update_sign.exe sign $env:RELEASE_VERSION target/release/Sugrob.exe target/release/Sugrob.exe.sig update_public_key.bin
+      - name: Выпустить
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $place = if ($env:GITHUB_REF_TYPE -eq 'tag') { '--verify-tag' } else { "--target=$env:GITHUB_SHA" }
+          gh release create $env:RELEASE_TAG target/release/Sugrob.exe target/release/Sugrob.exe.sig --latest=false $place --title "Сугроб $env:RELEASE_VERSION для Windows" --notes "Сборка для Windows. Установленные копии обновятся сами в течение 6 часов."
