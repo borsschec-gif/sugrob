@@ -1,0 +1,3 @@
+# Без этого exe требует VCRUNTIME140.dll, а его нет на чистой Windows.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
