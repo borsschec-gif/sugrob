@@ -17,6 +17,7 @@ final class Updater {
 
     private let repo = Bundle.main.object(forInfoDictionaryKey: "SugrobRepo") as? String
     private var timer: Timer?
+    private var retryTimer: Timer?
     private var isUpdating = false
 
     func start() {
@@ -38,21 +39,42 @@ final class Updater {
                 try await update(from: url)
             } catch {
                 Log.shared.write("update: \(error.localizedDescription)")
+                scheduleRetry()
             }
+        }
+    }
+
+    /// Сбой сети не должен откладывать обновление на 6 часов.
+    private func scheduleRetry() {
+        guard retryTimer == nil else { return }
+        retryTimer = Timer.scheduledTimer(withTimeInterval: 15 * 60, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.retryTimer = nil
+                self?.check()
+            }
+        }
+    }
+
+    private static func requireSuccess(_ response: URLResponse) throws {
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            throw ToolError(errorDescription: "сервер ответил \(code)")
         }
     }
 
     private func update(from url: URL) async throws {
         var request = URLRequest(url: url)
         request.setValue("Sugrob-updater", forHTTPHeaderField: "User-Agent")
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, apiResponse) = try await URLSession.shared.data(for: request)
+        try Self.requireSuccess(apiResponse)
         let release = try JSONDecoder().decode(Release.self, from: data)
         let version = release.tag_name.hasPrefix("v") ? String(release.tag_name.dropFirst()) : release.tag_name
         guard version.compare(Self.currentVersion, options: .numeric) == .orderedDescending,
               let asset = release.assets.first(where: { $0.name == "Sugrob.zip" }) else { return }
 
         Log.shared.write("update: downloading \(version)")
-        let (archive, _) = try await URLSession.shared.download(from: asset.browser_download_url)
+        let (archive, downloadResponse) = try await URLSession.shared.download(from: asset.browser_download_url)
+        try Self.requireSuccess(downloadResponse)
         let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("sugrob-update-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         _ = try await Self.run("/usr/bin/ditto", ["-x", "-k", archive.path, workspace.path])
