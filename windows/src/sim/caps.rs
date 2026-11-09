@@ -517,6 +517,9 @@ const CLOSE_DELAY: f64 = 0.15;
 const MAX_BRUSH_SPEED: f32 = 1500.0;
 const MIN_BRUSH_SPEED: f32 = 60.0;
 const MAX_BALL_RADIUS: f32 = 34.0;
+/// С какой скорости движение курсора считается взмахом, pt/s.
+const THROW_SPEED: f32 = 700.0;
+const MAX_THROW_SPEED: f32 = 3500.0;
 
 fn mark_source(list: &mut [SnowDebris], id: u64, from: usize) {
     for particle in &mut list[from..] {
@@ -551,6 +554,7 @@ pub struct CapField {
     dwell_time: f32,
     dwell_path: f32,
     smoothed_cursor_speed: f32,
+    flick_velocity: V2,
     last_sync: f64,
     last_relax: f64,
     has_seeded: bool,
@@ -578,6 +582,7 @@ impl CapField {
             dwell_time: 0.0,
             dwell_path: 0.0,
             smoothed_cursor_speed: 0.0,
+            flick_velocity: V2::default(),
             last_sync: -1.0,
             last_relax: 0.0,
             has_seeded: false,
@@ -811,8 +816,14 @@ impl CapField {
         // На малой скорости курсор идёт рывками, поэтому порог сравнивается со сглаженной скоростью.
         self.smoothed_cursor_speed += (speed - self.smoothed_cursor_speed) * (interval * 8.0).min(1.0);
 
+        self.flick_velocity = self.flick_velocity.plus(velocity.minus(self.flick_velocity).scaled((interval * 20.0).min(1.0)));
+
         if self.ball.is_some_and(|b| b.window.is_some()) {
-            self.roll_ball(cursor, interval, now);
+            if self.flick_velocity.len() >= THROW_SPEED {
+                self.throw_ball(self.flick_velocity);
+            } else {
+                self.roll_ball(cursor, interval, now);
+            }
             return;
         }
         if self.ball.is_none() && self.start_ball_if_dwelling(cursor, self.smoothed_cursor_speed, distance, interval) {
@@ -956,6 +967,17 @@ impl CapField {
         if covered(&self.windows[..index], current.position) || cursor.y < frame.y - reach || cursor.y > frame.y + 30.0 {
             self.release_ball();
         }
+    }
+
+    /// Взмах курсора бросает снежок: дальность зависит от скорости взмаха.
+    fn throw_ball(&mut self, velocity: V2) {
+        let Some(mut current) = self.ball else { return };
+        let Some(id) = current.window else { return };
+        current.velocity = velocity.scaled(0.85 * (MAX_THROW_SPEED / velocity.len()).min(1.0));
+        current.dropped_from = id;
+        current.window = None;
+        self.ball = Some(current);
+        self.spawn_puff(v2(current.position.x, current.position.y + current.radius), current.radius as usize, (20.0, 110.0), (30.0, 150.0), (0.3, 0.6));
     }
 
     fn release_ball(&mut self) {
@@ -1295,6 +1317,25 @@ mod tests {
         assert_eq!(draws.len(), 1);
         assert_eq!(draws[0].vertex_count, vertices.len());
         assert!(vertices.iter().all(|v| v.position.iter().all(|c| c.is_finite()) && v.thickness.is_finite()));
+    }
+
+    #[test]
+    fn flick_throws_rolling_ball() {
+        let mut field = CapField::new(9);
+        let w = window(1, 100.0, 300.0, 800.0, 300.0);
+        field.sync(&snap(0.1, vec![w], false, v2(0.0, 0.0)), 0.1);
+        field.ball = Some(SnowBall { position: v2(400.0, 280.0), velocity: V2::default(), radius: 10.0, rotation: 0.0, window: Some(1), dropped_from: 0 });
+        field.brush(v2(400.0, 295.0), 1.0);
+        for i in 1..12 {
+            field.brush(v2(400.0 + i as f32 * 40.0, 295.0), 1.0 + i as f64 / 60.0);
+            if field.ball.is_some_and(|b| b.window.is_none()) {
+                break;
+            }
+        }
+        let ball = field.ball.expect("снежок в полёте");
+        assert_eq!(ball.window, None);
+        assert_eq!(ball.dropped_from, 1);
+        assert!(ball.velocity.x > 500.0, "скорость {}", ball.velocity.x);
     }
 
     /// Случайная жизнь рабочего стола: панику или NaN здесь дешевле поймать, чем на ПК.
