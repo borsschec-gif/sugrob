@@ -64,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         governor.onPauseChange = { [weak self] paused in
             guard let self else { return }
             self.overlays.forEach { $0.setPaused(paused) }
+            self.tracker.setPaused(paused)
             if paused { self.santa.removeGiftIfAny() }
         }
         caps.cursorEffectsEnabled = settings.cursorEffects
@@ -268,12 +269,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         caps.spaceDidChange(now: CACurrentMediaTime())
     }
 
+    /// Уведомление приходит и после сна: пересоздаём, только если экраны правда другие.
     @objc private func screensChanged() {
+        guard Self.screenLayout() != screenLayout else { return }
         rebuildOverlays()
     }
 
+    private struct ScreenKey: Equatable {
+        let frame: CGRect
+        let scale: CGFloat
+    }
+
+    private var screenLayout: [ScreenKey] = []
+
+    private static func screenLayout() -> [ScreenKey] {
+        NSScreen.screens.map { ScreenKey(frame: $0.frame, scale: $0.backingScaleFactor) }
+    }
+
     private func rebuildOverlays() {
-        overlays.forEach { $0.close() }
+        screenLayout = Self.screenLayout()
+        overlays.forEach { $0.tearDown() }
         overlays = NSScreen.screens.enumerated().map { index, screen in
             OverlayWindow(screen: screen, tracker: tracker, caps: caps, renderer: renderer, seed: UInt64(index) &+ 7)
         }
@@ -287,6 +302,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func logRenderStats() {
+        guard !governor.isPaused else { return }
         let frames = overlays.map { $0.overlayView.takeFrameCount() }
         let fps = frames.map { String(format: "%.1f", Double($0) / 10) }.joined(separator: ",")
         Log.shared.write("render fps=[\(fps)]")

@@ -106,7 +106,7 @@ final class PowerGovernor {
 
     func evaluate() {
         let saving = settings.batterySaving && Self.isSavingPower
-        fps = saving ? min(Config.fps, 30) : Config.fps
+        fps = saving || Self.isIdle ? min(Config.fps, 30) : Config.fps
         density = settings.intensity * (saving ? 0.5 : 1)
 
         let reason = pauseReason()
@@ -136,6 +136,15 @@ final class PowerGovernor {
         let main = CGDisplayBounds(CGMainDisplayID())
         guard let front = tracker.snapshot.windows.first(where: { $0.holdsSnow && !$0.isFixedSurface }) else { return false }
         return front.frame.contains(main)
+    }
+
+    /// Через минуту без мыши и клавиатуры снег идёт на 30 кадрах: каждый кадр стоит пересборки всего экрана.
+    /// Первое же движение возвращает 60 не позже чем через секунду, а окна при движении и так получают 60.
+    private static let idleAfter: CFTimeInterval = 60
+
+    private static var isIdle: Bool {
+        guard let anyInput = CGEventType(rawValue: ~0) else { return false }
+        return CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInput) > idleAfter
     }
 
     private static var isSavingPower: Bool {

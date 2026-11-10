@@ -377,6 +377,14 @@ final class Renderer {
 
         // От задних окон к передним: окно стирает чужой снег под собой и получает свою шапку.
         var ballDrawn = false
+        // Стирать окну нужно, только если под ним уже нарисован чей-то снег. Иначе это проход
+        // с блендингом по всей площади окна впустую, а окон за кадр десятки.
+        var painted: [SIMD4<Float>] = []
+        func overlapsPainted(_ rect: SIMD4<Float>) -> Bool {
+            let minX = rect.x, minY = rect.y, maxX = rect.x + rect.z, maxY = rect.y + rect.w
+            return painted.contains { $0.x < maxX && $0.z > minX && $0.y < maxY && $0.w > minY }
+        }
+
         func drawBall(_ ball: BallDraw) {
             var rect = SIMD4(ball.center.x - ball.radius, ball.center.y - ball.radius, ball.radius * 2, ball.radius * 2)
             var rotation = ball.rotation
@@ -385,16 +393,22 @@ final class Renderer {
             encoder.setFragmentBytes(&rotation, length: MemoryLayout<Float>.stride, index: 1)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
             ballDrawn = true
+            painted.append(SIMD4(rect.x, rect.y, rect.x + rect.z, rect.y + rect.w))
         }
 
         for draw in draws {
             var rect = draw.rect
-            var eraseRadius = draw.cornerRadius
-            encoder.setFragmentBytes(&eraseRadius, length: MemoryLayout<Float>.stride, index: 2)
-            encoder.setRenderPipelineState(erasePipeline)
-            encoder.setVertexBytes(&rect, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
-            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+            if overlapsPainted(rect) {
+                var eraseRadius = draw.cornerRadius
+                encoder.setFragmentBytes(&eraseRadius, length: MemoryLayout<Float>.stride, index: 2)
+                encoder.setRenderPipelineState(erasePipeline)
+                encoder.setVertexBytes(&rect, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+            }
 
+            if draw.vertexCount > 0, draw.snowBounds.x <= draw.snowBounds.z {
+                painted.append(draw.snowBounds)
+            }
             if draw.vertexCount > 0 {
                 encoder.setRenderPipelineState(capPipeline)
                 encoder.setVertexBuffer(capVertices, offset: 0, index: 0)

@@ -24,6 +24,14 @@ final class OverlayWindow: NSWindow {
         overlayView.setPaused(paused)
         if paused { orderOut(nil) } else { orderFrontRegardless() }
     }
+
+    /// `close()` не вынимает вид из окна, и счётчик кадров продолжил бы рисовать в закрытое окно.
+    func tearDown() {
+        overlayView.stop()
+        orderOut(nil)
+        contentView = nil
+        close()
+    }
 }
 
 @MainActor
@@ -91,6 +99,11 @@ final class OverlayView: NSView {
 
     func setPaused(_ paused: Bool) {
         link?.isPaused = paused
+    }
+
+    func stop() {
+        link?.invalidate()
+        link = nil
     }
 
     func coverWithSnow() {

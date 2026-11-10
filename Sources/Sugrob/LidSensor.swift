@@ -35,7 +35,9 @@ struct LidMotion {
         // После сна или паузы старые замеры дали бы ложный рывок.
         if let previous, time - previous.time > Self.maxGap { samples.removeAll() }
         samples.append((angle, time))
-        samples.removeAll { time - $0.time > Self.speedWindow }
+        // При редком опросе в покое прошлый замер старше окна, но скорость первого движения нужна сразу.
+        let window = max(Self.speedWindow, previous.map { time - $0.time } ?? 0)
+        samples.removeAll { time - $0.time > window }
 
         var state = LidState(angle: angle)
         if let previous, time - previous.time <= Self.maxGap { state.dt = Float(time - previous.time) }
@@ -53,7 +55,11 @@ struct LidMotion {
 /// Датчик угла крышки: недокументированное устройство HID, есть не на всех Mac.
 @MainActor
 final class LidSensor {
-    private static let pollInterval: CFTimeInterval = 1.0 / 30
+    /// Чтение синхронное и занимает около миллисекунды главного потока, поэтому в покое редкое.
+    private static let movingInterval: CFTimeInterval = 1.0 / 30
+    private static let calmInterval: CFTimeInterval = 1.0 / 6
+    /// Сколько держать частый опрос после последнего движения крышки.
+    private static let movingHold: CFTimeInterval = 1.5
     private static let maxFailures = 10
     private static let maxKick: Float = 450
 
@@ -61,6 +67,8 @@ final class LidSensor {
     private var device: IOHIDDevice?
     private var motion = LidMotion()
     private var lastPoll: CFTimeInterval = 0
+    private var lastAngle: Float?
+    private var movingUntil: CFTimeInterval = 0
     private var lastTick: CFTimeInterval = 0
     private var failures = 0
     private var readCount = 0
@@ -108,11 +116,14 @@ final class LidSensor {
             return LidState()
         }
         var state: LidState?
-        if now - lastPoll >= Self.pollInterval {
+        let interval = now < movingUntil ? Self.movingInterval : Self.calmInterval
+        if now - lastPoll >= interval {
             lastPoll = now
             let started = CACurrentMediaTime()
             if let angle = read() {
                 failures = 0
+                if let lastAngle, abs(angle - lastAngle) >= 2 { movingUntil = now + Self.movingHold }
+                lastAngle = angle
                 state = motion.add(angle: angle, time: now)
                 measure(since: started)
             } else {

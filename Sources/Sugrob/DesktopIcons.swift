@@ -4,7 +4,12 @@ import ApplicationServices
 /// Папки на рабочем столе через Accessibility. Файлы снег не держат.
 /// Вызывается только с очереди трекера.
 final class DesktopIcons {
-    private static let refreshInterval: CFTimeInterval = 3
+    /// Каждый обход — несколько запросов к Finder на каждую иконку. Сразу после перетаскивания
+    /// обход идёт вне очереди, так что редкий таймер нужен только для перемен без мыши.
+    private static let refreshInterval: CFTimeInterval = 10
+    private static let hiddenCheckInterval: CFTimeInterval = 30
+    private var lastHiddenCheck: CFTimeInterval = -.infinity
+    private var iconsHidden = false
 
     private var lastRefresh: CFTimeInterval = 0
     private var wasBusy = false
@@ -19,6 +24,10 @@ final class DesktopIcons {
         wasBusy = isBusy
         if !isBusy, now - lastRefresh >= Self.refreshInterval {
             lastRefresh = now
+            if now - lastHiddenCheck >= Self.hiddenCheckInterval {
+                lastHiddenCheck = now
+                iconsHidden = Self.areIconsHidden
+            }
             if let fresh = readFolders() { folders = fresh }
         }
         return folders
@@ -35,7 +44,7 @@ final class DesktopIcons {
     }
 
     private func readFolders() -> [TrackedWindow]? {
-        if Self.areIconsHidden { return [] }
+        if iconsHidden { return [] }
         guard AXIsProcessTrusted(),
               let finder = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first
         else { return nil }
@@ -46,8 +55,16 @@ final class DesktopIcons {
         else { return nil }
 
         var result: [TrackedWindow] = []
+        var seen = Set<String>()
+        defer {
+            // Кэши помнят только то, что лежит на столе сейчас: иначе копят каждый скриншот за месяцы.
+            isFolderByPath = isFolderByPath.filter { seen.contains($0.key) }
+            shapeByPath = shapeByPath.filter { seen.contains($0.key) }
+        }
         for icon in Self.children(of: group) where Self.role(of: icon) == "AXImage" {
-            guard let path = Self.path(of: icon), isFolder(path), let frame = Self.frame(of: icon) else { continue }
+            guard let path = Self.path(of: icon) else { continue }
+            seen.insert(path)
+            guard isFolder(path), let frame = Self.frame(of: icon) else { continue }
             guard let shape = shape(of: path) else { continue }
             let scale = frame.width / 52
             let surface = CGRect(

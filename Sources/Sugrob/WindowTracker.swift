@@ -40,10 +40,14 @@ final class WindowTracker: @unchecked Sendable {
 
     private static let idleHz = 5.0
     private static let fastHz = 60.0
+    /// На паузе снег не рисуется: губернатору хватает редкого снимка, чтобы заметить выход из полного экрана.
+    private static let pausedHz = 1.0
     /// Сколько держать частый опрос после последнего движения окон.
     private static let activeHold = 0.4
     private var fixedHz: Double?
     private var isFast = false
+    private var isPaused = false
+    private var latestNearDock = false
     private var lastActivity: CFTimeInterval = 0
 
     private let dock = DockTracker()
@@ -73,6 +77,7 @@ final class WindowTracker: @unchecked Sendable {
     /// Нажатие кнопки мыши: переходим на частый опрос сразу, не дожидаясь редкого тика.
     func wake() {
         queue.async { [self] in
+            guard !isPaused else { return }
             lastActivity = CACurrentMediaTime()
             setFast(true)
             poll()
@@ -87,6 +92,17 @@ final class WindowTracker: @unchecked Sendable {
         guard value != isFast, fixedHz == nil, let timer else { return }
         isFast = value
         schedule(timer, hz: value ? Self.fastHz : Self.idleHz)
+    }
+
+    /// На паузе не трогаем Dock и Finder и не ускоряемся от кликов.
+    func setPaused(_ paused: Bool) {
+        queue.async { [self] in
+            guard paused != isPaused, let timer else { return }
+            isPaused = paused
+            isFast = false
+            schedule(timer, hz: paused ? Self.pausedHz : fixedHz ?? Self.idleHz)
+            if !paused { poll() }
+        }
     }
 
     private func poll() {
@@ -122,17 +138,23 @@ final class WindowTracker: @unchecked Sendable {
                 layer: layer))
         }
 
+        guard !isPaused else {
+            publish(WindowSnapshot(timestamp: started, windows: windows))
+            return
+        }
+
         // Dock лежит поверх обычных окон. Даже скрытый он остаётся в списке, за нижним краем экрана.
         var isNearDock = false
-        if let frame = dock.frame(now: started) {
+        let cursor = CGEvent(source: nil)?.location ?? .zero
+        let wasNearDock = latestNearDock
+        if let frame = dock.frame(now: started, fresh: isFast || wasNearDock) {
             windows.insert(
                 TrackedWindow(id: DockTracker.windowID, frame: frame, owner: "Dock", hasName: false, holdsSnow: true, isDock: true, layer: 20),
                 at: windows.firstIndex { $0.layer <= 20 } ?? windows.count)
             // Авто-скрытие длится 200 мс, редкий опрос заметно опоздал бы.
-            if let cursor = CGEvent(source: nil)?.location {
-                isNearDock = frame.insetBy(dx: -40, dy: -80).contains(cursor) || cursor.y >= mainDisplay.maxY - 8
-            }
+            isNearDock = frame.insetBy(dx: -40, dy: -80).contains(cursor) || cursor.y >= mainDisplay.maxY - 8
         }
+        latestNearDock = isNearDock
 
         // Иконки лежат под всеми окнами, поэтому в конце списка.
         windows.append(contentsOf: desktopIcons.current(now: started, isBusy: isFast))
@@ -140,11 +162,8 @@ final class WindowTracker: @unchecked Sendable {
         let isMouseDown = CGEventSource.buttonState(.combinedSessionState, button: .left)
         let snapshot = WindowSnapshot(
             timestamp: started, windows: windows, isFast: isFast || fixedHz != nil, isMouseDown: isMouseDown,
-            cursor: CGEvent(source: nil)?.location ?? .zero)
-        lock.lock()
-        let previous = latest
-        latest = snapshot
-        lock.unlock()
+            cursor: cursor)
+        let previous = publish(snapshot)
 
         let moved = !previous.hasSameGeometry(as: snapshot)
         if moved || isMouseDown || (isNearDock && snapshot.cursor != previous.cursor) {
@@ -154,6 +173,14 @@ final class WindowTracker: @unchecked Sendable {
 
         meter.update(snapshot: snapshot)
         recordStats(cost: cost, windows: windows)
+    }
+
+    @discardableResult
+    private func publish(_ snapshot: WindowSnapshot) -> WindowSnapshot {
+        lock.lock(); defer { lock.unlock() }
+        let previous = latest
+        latest = snapshot
+        return previous
     }
 
     private func recordStats(cost: Double, windows: [TrackedWindow]) {

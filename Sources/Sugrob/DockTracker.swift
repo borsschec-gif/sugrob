@@ -8,8 +8,22 @@ final class DockTracker {
     private var list: AXUIElement?
     private var isTrusted = false
     private var lastTrustCheck: CFTimeInterval = 0
+    private var cachedFrame: CGRect?
+    private var lastRead: CFTimeInterval = -.infinity
+    /// Dock сбоку не поддерживается; искать его заново раз в несколько секунд, а не на каждом опросе.
+    private var sideDockUntil: CFTimeInterval = 0
+    /// Рамка Dock меняется редко: в покое хватает раза в секунду, при активности — каждый опрос.
+    private static let idleRefresh: CFTimeInterval = 1
 
-    func frame(now: CFTimeInterval) -> CGRect? {
+    /// `fresh` — нужна свежая рамка: двигаются окна или курсор у Dock с авто-скрытием.
+    func frame(now: CFTimeInterval, fresh: Bool) -> CGRect? {
+        guard fresh || now - lastRead >= Self.idleRefresh else { return cachedFrame }
+        lastRead = now
+        cachedFrame = readFrame(now: now)
+        return cachedFrame
+    }
+
+    private func readFrame(now: CFTimeInterval) -> CGRect? {
         if now - lastTrustCheck > 2 {
             lastTrustCheck = now
             let trusted = AXIsProcessTrusted()
@@ -18,10 +32,15 @@ final class DockTracker {
         }
         guard isTrusted else { return nil }
 
+        guard now >= sideDockUntil else { return nil }
         if list == nil { list = findList() }
-        // Dock сбоку пока не поддерживаем.
-        guard let list, let frame = Self.frame(of: list), frame.width > frame.height else {
+        guard let list, let frame = Self.frame(of: list) else {
             self.list = nil
+            return nil
+        }
+        // Dock сбоку пока не поддерживаем.
+        guard frame.width > frame.height else {
+            sideDockUntil = now + 5
             return nil
         }
         // Рамка AXList выше видимой плашки: верх стекла ниже на 6 pt.

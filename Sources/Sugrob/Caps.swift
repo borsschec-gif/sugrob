@@ -25,6 +25,8 @@ struct CapDraw {
     var vertexCount: Int
     var windowID: CGWindowID
     var cornerRadius: Float
+    /// Где лежит снег шапки: minX, minY, maxX, maxY. Пусто, если снега нет.
+    var snowBounds = SIMD4<Float>(.infinity, .infinity, -.infinity, -.infinity)
 }
 
 /// Частица сорвавшегося снега, в координатах CoreGraphics.
@@ -53,7 +55,7 @@ private struct SnowBall {
 private final class SnowCap {
     static let step: Float = 2
     /// Настоящий радиус угла, если удалось измерить. Без него снег лежит только на ровном участке края.
-    private(set) var cornerRadius: Float?
+    private(set) var cornerRadius: Float? { didSet { shapeVersion &+= 1 } }
     private var snowStart: Float {
         guard let cornerRadius else { return 16 }
         return cornerRadius < 6 ? cornerRadius * 0.36 : cornerRadius * cornerWrapStart
@@ -65,22 +67,29 @@ private final class SnowCap {
     /// Предел высоты снега: на маленькой иконке сугроб ниже.
     private var heightLimit: Float = .infinity
     /// Настоящий контур верха иконки: на сколько точек он ниже самой высокой точки.
-    var surfaceProfile: [Float]?
+    var surfaceProfile: [Float]? { didSet { shapeVersion &+= 1 } }
     /// Где на дуге угла заканчивается снег: чем больше, тем меньше он заходит на закругление.
-    var cornerWrapStart: Float = 0.05
+    var cornerWrapStart: Float = 0.05 { didSet { shapeVersion &+= 1 } }
 
     func limitHeight(to limit: Float) {
         heightLimit = limit
         for index in heights.indices { heights[index] = min(heights[index], limit) }
     }
 
-    private(set) var heights: [Float]
-    private var detail: [Float] = []
+    private(set) var heights: [Float] { didSet { shapeVersion &+= 1 } }
+    private var detail: [Float] = [] { didSet { shapeVersion &+= 1 } }
+    /// Меняется при любой правке формы: по нему сетка шапки пересобирается, только когда нужно.
+    private var shapeVersion = 0
+    private var meshVersion = -1
+    private var meshWidth: Float = -1
+    /// Сетка в координатах окна и её границы: minX, minY, maxX, maxY.
+    private var localMesh: [CapVertex] = []
+    private var localBounds = SIMD4<Float>.zero
     /// Сдвиг левого края в точках карты, чтобы неровности не прыгали при ресайзе слева.
     private var detailOffset = 0
     /// Остаток сдвига левого края меньше одного шага карты.
     private var leftCarry: Float = 0
-    private(set) var width: Float
+    private(set) var width: Float { didSet { shapeVersion &+= 1 } }
     private let phases: SIMD2<Float>
     var activeUntil: CFTimeInterval = 0
     /// Сглаженная скорость окна, pt/s.
@@ -434,6 +443,32 @@ private final class SnowCap {
     }
 
     /// Высота поверхности с учётом скругления углов и мелких неровностей.
+    /// Шапка почти всегда лежит без движения, поэтому сетка считается один раз и только сдвигается вместе с окном.
+    func mesh(windowWidth: Float) -> (vertices: [CapVertex], bounds: SIMD4<Float>) {
+        if meshVersion != shapeVersion || meshWidth != windowWidth {
+            meshVersion = shapeVersion
+            meshWidth = windowWidth
+            localMesh.removeAll(keepingCapacity: true)
+            var low = SIMD2<Float>(.infinity, .infinity)
+            var high = SIMD2<Float>(-.infinity, -.infinity)
+            for index in 0..<count {
+                let u = min(Float(index) * Self.step, windowWidth)
+                let h = surfaceHeight(at: index)
+                let base = baseDrop(atLocal: u)
+                let normal = surfaceNormal(atLocal: u)
+                let outer = SIMD2(u + normal.x * (h + 1), base - normal.y * (h + 1))
+                let inner = SIMD2(u - normal.x, base + normal.y)
+                localMesh.append(CapVertex(position: SIMD4(outer.x, outer.y, -1, u), thickness: h))
+                localMesh.append(CapVertex(position: SIMD4(inner.x, inner.y, h + 1, u), thickness: h))
+                low = simd_min(low, simd_min(outer, inner))
+                high = simd_max(high, simd_max(outer, inner))
+            }
+            // Край шапки сглаживается в шейдере: запас в пару точек.
+            localBounds = SIMD4(lowHalf: low - 2, highHalf: high + 2)
+        }
+        return (localMesh, localBounds)
+    }
+
     func surfaceHeight(at index: Int) -> Float {
         let u = Float(index) * Self.step
         let raw = heights[index]
@@ -498,8 +533,13 @@ final class CapField {
     private var lidSlip: Float = 0
     private var lidScreen = CGRect.null
     private var lidFullShedUntil: CFTimeInterval = 0
-    private var caps: [CGWindowID: SnowCap] = [:]
-    private var windows: [TrackedWindow] = []
+    private var caps: [CGWindowID: SnowCap] = [:] { didSet { landingIsStale = true } }
+    private var windows: [TrackedWindow] = [] { didSet { landingIsStale = true } }
+    /// Плоская копия того, что нужно хлопьям на каждом кадре: без строк, словарей и копий окон.
+    private var landing: [LandingTarget] = []
+    private var landingFrames: [CGRect] = []
+    private var landingTop: Float = .infinity
+    private var landingIsStale = true
     private var debris: [SnowDebris] = []
     private var lastDebrisStep: CFTimeInterval = 0
     private var slidingUntil: CFTimeInterval = 0
@@ -1146,23 +1186,60 @@ final class CapField {
         }
     }
 
+    private struct LandingTarget {
+        let index: Int
+        let id: CGWindowID
+        let minX: Float
+        let maxX: Float
+        let top: Float
+        /// Насколько поверхность может уйти ниже верха окна: скругление угла или контур иконки.
+        let maxDrop: Float
+        let cap: SnowCap
+    }
+
+    /// Радиус угла меряется по снимку 48 pt и не бывает больше этого.
+    private static let maxCornerDrop: Float = 96
+
+    private func refreshLanding() {
+        landingIsStale = false
+        landing.removeAll(keepingCapacity: true)
+        landingFrames = windows.map(\.frame)
+        let screenBottom = Float(CGDisplayBounds(CGMainDisplayID()).maxY)
+        for (index, window) in windows.enumerated() where window.holdsSnow {
+            guard let cap = caps[window.id] else { continue }
+            let top = Float(window.frame.minY)
+            // Скрытый Dock уходит за нижний край экрана.
+            if window.isDock, top >= screenBottom - 1 { continue }
+            landing.append(LandingTarget(
+                index: index, id: window.id,
+                minX: Float(window.frame.minX), maxX: Float(window.frame.maxX), top: top,
+                maxDrop: window.isDesktopIcon ? Float(window.frame.height) : Self.maxCornerDrop,
+                cap: cap))
+        }
+        landingTop = landing.map(\.top).min() ?? .infinity
+    }
+
     /// Проверяет, упал ли хлопья на видимый снег или край окна на этом шаге.
     func tryLand(
         x: Float, fromY: Float, toY: Float, amount: Float, now: CFTimeInterval,
         chance: Float = landingChance, excluding: CGWindowID = 0, wholeEdge: Bool = false
     ) -> Bool {
         guard now >= slidingUntil else { return false }
-        for (index, window) in windows.enumerated() where window.holdsSnow && window.id != excluding {
-            let minX = Float(window.frame.minX)
-            guard x > minX, x < Float(window.frame.maxX), let cap = caps[window.id] else { continue }
-            if window.isDock, window.frame.minY >= CGDisplayBounds(CGMainDisplayID()).maxY - 1 { continue }
-            let u = x - minX
+        if landingIsStale { refreshLanding() }
+        // Хлопья выше всех шапок: большинство за кадр.
+        guard toY >= landingTop - Self.maxHeight - 1 else { return false }
+        for target in landing where target.id != excluding {
+            guard x > target.minX, x < target.maxX,
+                  toY >= target.top - Self.maxHeight - 1, fromY <= target.top + target.maxDrop
+            else { continue }
+            let cap = target.cap
+            let u = x - target.minX
             guard wholeEdge || cap.canHoldSnow(atLocal: u) else { continue }
-            let surface = Float(window.frame.minY) + cap.baseDrop(atLocal: u) - cap.height(atLocal: u)
+            let surface = target.top + cap.baseDrop(atLocal: u) - cap.height(atLocal: u)
             guard fromY <= surface, toY >= surface else { continue }
 
             let point = CGPoint(x: CGFloat(x), y: CGFloat(surface))
-            guard !windows[..<index].contains(where: { $0.frame.contains(point) }) else { continue }
+            guard !landingFrames[..<target.index].contains(where: { $0.contains(point) }) else { continue }
 
             // На наклонённом экране снегу не за что зацепиться.
             if lidSlip > 0, lidScreen.contains(point), Float.random(in: 0...1, using: &generator) < lidSlip { continue }
@@ -1198,18 +1275,16 @@ final class CapField {
             var draw = CapDraw(rect: SIMD4(x, y, width, height), vertexStart: used, vertexCount: 0, windowID: window.id,
                 cornerRadius: caps[window.id]?.cornerRadius ?? 20)
             if window.holdsSnow, let cap = caps[window.id], used + cap.count * 2 <= capacity {
-                for index in 0..<cap.count {
-                    let u = min(Float(index) * SnowCap.step, width)
-                    let h = cap.surfaceHeight(at: index)
-                    let base = y + cap.baseDrop(atLocal: u)
-                    let normal = cap.surfaceNormal(atLocal: u)
-                    vertices[used] = CapVertex(
-                        position: SIMD4(x + u + normal.x * (h + 1), base - normal.y * (h + 1), -1, u), thickness: h)
-                    vertices[used + 1] = CapVertex(
-                        position: SIMD4(x + u - normal.x, base + normal.y, h + 1, u), thickness: h)
-                    used += 2
+                let mesh = cap.mesh(windowWidth: width)
+                let shift = SIMD4<Float>(x, y, 0, 0)
+                mesh.vertices.withUnsafeBufferPointer { local in
+                    for (offset, vertex) in local.enumerated() {
+                        vertices[used + offset] = CapVertex(position: vertex.position + shift, thickness: vertex.thickness)
+                    }
                 }
-                draw.vertexCount = cap.count * 2
+                used += mesh.vertices.count
+                draw.snowBounds = mesh.bounds + SIMD4(x, y, x, y)
+                draw.vertexCount = mesh.vertices.count
             }
             draws.append(draw)
         }
