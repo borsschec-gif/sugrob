@@ -139,10 +139,20 @@ final class PowerGovernor {
         return ""
     }
 
+    /// Полный экран macOS. На Mac с вырезом окно начинается под вырезом и не закрывает экран целиком,
+    /// а развёрнутое окно при скрытом Dock выглядит так же: отличает их окно Dock, которого в полном экране нет.
+    /// Системный `currentSystemPresentationOptions` у фонового приложения всегда пустой.
     private var isFullScreenAppInFront: Bool {
+        let snapshot = tracker.snapshot
         let main = CGDisplayBounds(CGMainDisplayID())
-        guard let front = tracker.snapshot.windows.first(where: { $0.holdsSnow && !$0.isFixedSurface }) else { return false }
-        return front.frame.contains(main)
+        let top = main.minY + (NSScreen.screens.first?.safeAreaInsets.top ?? 0) + 8
+        return snapshot.windows.contains { window in
+            guard window.holdsSnow, !window.isFixedSurface else { return false }
+            if window.frame.contains(main) { return true }
+            return !snapshot.hasDockSheet
+                && window.frame.minX <= main.minX + 1 && window.frame.maxX >= main.maxX - 1
+                && window.frame.minY <= top && window.frame.maxY >= main.maxY - 1
+        }
     }
 
     /// Через минуту без мыши и клавиатуры снег идёт на 30 кадрах: каждый кадр стоит пересборки всего экрана.

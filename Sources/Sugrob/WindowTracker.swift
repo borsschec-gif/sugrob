@@ -27,6 +27,8 @@ struct WindowSnapshot: Sendable {
     var isFast = false
     var isMouseDown = false
     var cursor = CGPoint.zero
+    /// Прозрачное окно Dock на весь экран. В полноэкранном Space его нет.
+    var hasDockSheet = true
 }
 
 /// Опрашивает WindowServer на своей очереди. Разрешений это не требует:
@@ -113,6 +115,7 @@ final class WindowTracker: @unchecked Sendable {
 
         let mainDisplay = CGDisplayBounds(CGMainDisplayID())
         var windows: [TrackedWindow] = []
+        var hasDockSheet = false
         windows.reserveCapacity(raw.count)
         for info in raw {
             guard let layer = info[kCGWindowLayer as String] as? Int, layer >= 0,
@@ -128,6 +131,9 @@ final class WindowTracker: @unchecked Sendable {
             let isSystemSheet = layer != 0 && (
                 owner == "Dock" || owner == "Window Server"
                     || frame.width * frame.height >= mainDisplay.width * mainDisplay.height * 0.8)
+            if owner == "Dock", layer != 0, frame.width * frame.height >= mainDisplay.width * mainDisplay.height * 0.8 {
+                hasDockSheet = true
+            }
             guard !isSystemSheet else { continue }
             windows.append(TrackedWindow(
                 id: number,
@@ -139,7 +145,7 @@ final class WindowTracker: @unchecked Sendable {
         }
 
         guard !isPaused else {
-            publish(WindowSnapshot(timestamp: started, windows: windows))
+            publish(WindowSnapshot(timestamp: started, windows: windows, hasDockSheet: hasDockSheet))
             return
         }
 
@@ -162,7 +168,7 @@ final class WindowTracker: @unchecked Sendable {
         let isMouseDown = CGEventSource.buttonState(.combinedSessionState, button: .left)
         let snapshot = WindowSnapshot(
             timestamp: started, windows: windows, isFast: isFast || fixedHz != nil, isMouseDown: isMouseDown,
-            cursor: cursor)
+            cursor: cursor, hasDockSheet: hasDockSheet)
         let previous = publish(snapshot)
 
         let moved = !previous.hasSameGeometry(as: snapshot)
