@@ -74,9 +74,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.lid.hold(until: CACurrentMediaTime() + 3)
             // Без курсора счистить снег было бы нечем.
-            guard self.settings.coverAfterSleep, self.settings.cursorEffects, seconds >= Config.sheetMinSleep else { return }
-            Log.shared.write(String(format: "sheet: спал %.0f с, экран занесён", seconds))
-            self.overlays.forEach { $0.overlayView.coverWithSnow() }
+            let fraction = SnowSheet.coverFraction(afterSleep: seconds * Config.sheetSleepScale)
+            guard self.settings.coverAfterSleep, self.settings.cursorEffects, fraction > 0 else { return }
+            Log.shared.write(String(format: "sheet: спал %.0f с, занесено %.0f %% экрана", seconds, fraction * 100))
+            self.overlays.forEach { $0.overlayView.coverWithSnow(fraction: fraction) }
         }
         governor.start()
         updater.start()

@@ -574,7 +574,8 @@ final class Renderer {
         var sheet: SnowSheet?
         if let mode = Config.snapshotSheet {
             sheet = SnowSheet(device: device, width: Float(width), height: Float(height), seed: 5)
-            sheet?.cover()
+            // Число — сколько минут спал экран.
+            sheet?.cover(fraction: Double(mode).map { SnowSheet.coverFraction(afterSleep: $0 * 60) } ?? SnowSheet.fullCover)
             if mode == "wiped" {
                 // Курсор прошёл по экрану дугой.
                 for step in 0...40 {

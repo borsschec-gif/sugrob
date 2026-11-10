@@ -6,11 +6,20 @@ import simd
 final class SnowSheet {
     private static let cell: Float = 6
     private static let wipeRadius: Float = 62
-    /// Когда снега осталось меньше этой доли, остаток тает сам: дочищать углы незачем.
-    private static let meltBelow: Float = 0.06
+    /// Когда от нанесённого снега осталось меньше этой доли, остаток тает сам: дочищать углы незачем.
+    private static let meltBelow: Float = 0.07
     private static let meltPerFrame: UInt8 = 14
-    /// Какая доля экрана сверху остаётся чистой: снегу ещё есть куда сыпаться.
-    private static let clearTop: Float = 0.16
+    /// Самый большой занос: верх экрана остаётся чистым, снегу ещё есть куда сыпаться.
+    static let fullCover: Float = 0.84
+    /// За сколько секунд сна экран заносит полностью и с какого сна занос вообще заметен.
+    static let fullCoverAfter: TimeInterval = 30 * 60
+    static let minSleep: TimeInterval = 2 * 60
+
+    /// Доля экрана под снегом после сна: растёт равномерно, 5 минут — 14 %, 10 — 28 %, 30 — 84 %.
+    static func coverFraction(afterSleep seconds: TimeInterval) -> Float {
+        guard seconds >= minSleep else { return 0 }
+        return fullCover * Float(min(1, seconds / fullCoverAfter))
+    }
     /// Толщина мягкого края у кромки сугроба, pt.
     private static let edge: Float = 18
 
@@ -18,8 +27,12 @@ final class SnowSheet {
     private let columns: Int
     private let rows: Int
     private var values: [UInt8]
-    /// Высота кромки сугроба в каждом столбце, pt от верха экрана.
-    private let surface: [Float]
+    /// Волны кромки сугроба в каждом столбце, pt.
+    private let waves: [Float]
+    private let height: Float
+    /// Какая доля экрана сейчас занесена и сколько клеток было под снегом сразу после заноса.
+    private var fraction: Float = 0
+    private var coveredAtStart = 0
     private var generator: SeededGenerator
     private var isDirty = false
     private var isMelting = false
@@ -44,19 +57,23 @@ final class SnowSheet {
 
         var generator = SeededGenerator(state: seed)
         let phases = (0..<3).map { _ in Float.random(in: 0...6.28, using: &generator) }
-        surface = (0..<columns).map { column in
+        self.height = height
+        waves = (0..<columns).map { column in
             let x = Float(column) * Self.cell
-            return height * Self.clearTop + 22 * sin(x * 0.007 + phases[0])
-                + 12 * sin(x * 0.021 + phases[1]) + 5 * sin(x * 0.06 + phases[2])
+            return 22 * sin(x * 0.007 + phases[0]) + 12 * sin(x * 0.021 + phases[1]) + 5 * sin(x * 0.06 + phases[2])
         }
         self.generator = generator
     }
 
-    func cover() {
+    /// Заносит нижнюю часть экрана. Неубранный снег с прошлого сна не становится ниже.
+    func cover(fraction newFraction: Float = SnowSheet.fullCover) {
+        fraction = min(Self.fullCover, max(newFraction, isActive && !isMelting ? fraction : 0))
+        guard fraction > 0 else { return }
         sink = 0
         for row in 0..<rows {
             for column in 0..<columns { values[row * columns + column] = level(row: row, column: column) }
         }
+        coveredAtStart = coveredCells
         isActive = true
         isMelting = false
         isDirty = true
@@ -107,7 +124,9 @@ final class SnowSheet {
 
     /// Толщина снега под кромкой: выше неё пусто, ниже сугроб.
     private func level(row: Int, column: Int) -> UInt8 {
-        let depth = (Float(row) + 0.5) * Self.cell - surface[column] - sink
+        // У низкого сугроба волны ниже, иначе кромка уходила бы за край экрана.
+        let top = height * (1 - fraction) + waves[column] * min(1, fraction / 0.2)
+        let depth = (Float(row) + 0.5) * Self.cell - top - sink
         return UInt8(max(0, min(1, depth / Self.edge)) * 255)
     }
 
@@ -146,9 +165,12 @@ final class SnowSheet {
             Float.random(in: -90...20, using: &generator)))
     }
 
+    private var coveredCells: Int {
+        values.reduce(0) { $0 + ($1 > 40 ? 1 : 0) }
+    }
+
     private func refreshCoverage() {
-        let covered = values.reduce(0) { $0 + ($1 > 40 ? 1 : 0) }
-        if Float(covered) < Float(values.count) * Self.meltBelow { isMelting = true }
+        if Float(coveredCells) < Float(coveredAtStart) * Self.meltBelow { isMelting = true }
     }
 
     /// Раз в кадр: дотаивание и загрузка карты в текстуру.

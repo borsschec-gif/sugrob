@@ -130,8 +130,8 @@ final class OverlayView: NSView {
         link = nil
     }
 
-    func coverWithSnow() {
-        sheet?.cover()
+    func coverWithSnow(fraction: Float) {
+        sheet?.cover(fraction: fraction)
     }
 
     func clearSnowCover() {
