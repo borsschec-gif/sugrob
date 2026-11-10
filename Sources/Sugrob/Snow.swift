@@ -138,18 +138,30 @@ struct SnowField {
     /// Возвращает, сколько хлопьев записано.
     func writeInstances(to pointer: UnsafeMutablePointer<FlakeInstance>, time: Float) -> Int {
         var written = 0
-        let visibleRank = visibleRank
-        for flake in flakes where flake.rank <= visibleRank {
-            let layer = Self.layers[flake.layer]
-            let twinkle = 0.85 + 0.15 * sin(time * 1.7 + flake.phase * 3)
-            pointer[written] = FlakeInstance(
-                rect: SIMD4(flake.x - flake.radius, flake.y - flake.radius, flake.radius * 2, flake.radius * 2),
-                alpha: flake.alpha * twinkle,
-                softness: layer.softness,
-                ring: layer.ring)
+        forEachInstance(time: time) { _, instance in
+            guard let instance else { return }
+            pointer[written] = instance
             written += 1
         }
         return written
+    }
+
+    /// Обходит все хлопья по порядку; скрытые густотой приходят как `nil`.
+    func forEachInstance(time: Float, _ body: (Int, FlakeInstance?) -> Void) {
+        let visibleRank = visibleRank
+        for (index, flake) in flakes.enumerated() {
+            guard flake.rank <= visibleRank else {
+                body(index, nil)
+                continue
+            }
+            let layer = Self.layers[flake.layer]
+            let twinkle = 0.85 + 0.15 * sin(time * 1.7 + flake.phase * 3)
+            body(index, FlakeInstance(
+                rect: SIMD4(flake.x - flake.radius, flake.y - flake.radius, flake.radius * 2, flake.radius * 2),
+                alpha: flake.alpha * twinkle,
+                softness: layer.softness,
+                ring: layer.ring))
+        }
     }
 }
 

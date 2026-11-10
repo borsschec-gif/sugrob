@@ -50,6 +50,11 @@ final class OverlayView: NSView {
     private let isBuiltIn: Bool
     private let screenBounds: CGRect
     private let metalLayer = CAMetalLayer()
+    private let flakeLayers: FlakeLayers
+    /// Шапки меняются медленно: без движения слой Metal перерисовывается редко.
+    private static let stillInterval: CFTimeInterval = 0.1
+    private var lastMetalDraw: CFTimeInterval = 0
+    private var metalFrameCount = 0
     private var field: SnowField
     private let ring: FrameRing?
     private var link: CADisplayLink?
@@ -71,6 +76,7 @@ final class OverlayView: NSView {
         field = SnowField(width: Float(screen.frame.width), height: Float(screen.frame.height), seed: seed)
         sheet = SnowSheet(device: renderer.device, width: Float(screen.frame.width), height: Float(screen.frame.height), seed: seed)
         ring = FrameRing(device: renderer.device, flakeCapacity: field.instanceCount + CapField.maxDebris)
+        flakeLayers = FlakeLayers(count: field.instanceCount)
         super.init(frame: CGRect(origin: .zero, size: screen.frame.size))
         wantsLayer = true
     }
@@ -83,7 +89,25 @@ final class OverlayView: NSView {
         metalLayer.pixelFormat = .bgra8Unorm
         metalLayer.isOpaque = false
         metalLayer.framebufferOnly = true
-        return metalLayer
+        let root = CALayer()
+        root.addSublayer(metalLayer)
+        root.addSublayer(flakeLayers.host)
+        return root
+    }
+
+    /// Авторазмер слоёв здесь не годится: корневой слой получает размер позже и растянул бы их вдвое.
+    override func layout() {
+        super.layout()
+        fitLayers()
+    }
+
+    private func fitLayers() {
+        guard metalLayer.frame != bounds else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        metalLayer.frame = bounds
+        flakeLayers.host.frame = bounds
+        CATransaction.commit()
     }
 
     override func viewDidMoveToWindow() {
@@ -114,9 +138,10 @@ final class OverlayView: NSView {
         sheet?.clear()
     }
 
-    func takeFrameCount() -> Int {
-        defer { frameCount = 0 }
-        return frameCount
+    /// Кадры снегопада и кадры слоя Metal с прошлого вызова.
+    func takeFrameCount() -> (flakes: Int, metal: Int) {
+        defer { frameCount = 0; metalFrameCount = 0 }
+        return (frameCount, metalFrameCount)
     }
 
     @objc private func tick(_ link: CADisplayLink) {
@@ -156,6 +181,17 @@ final class OverlayView: NSView {
         caps.stepDebris(now: link.timestamp)
         santa?.tick(now: link.timestamp)
 
+        fitLayers()
+        flakeLayers.update(field: field, time: time)
+        frameCount += 1
+
+        let sheetIsActive = sheet?.isActive == true
+        let needsMetal = isMoving || sheetIsActive || Config.debugOverlay
+            || link.timestamp - lastMetalDraw >= Self.stillInterval
+        guard needsMetal else { return }
+        lastMetalDraw = link.timestamp
+        metalFrameCount += 1
+
         let scale = window.backingScaleFactor
         // Лишняя установка свойств слоя стоит транзакции Core Animation на каждом кадре.
         let drawableSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
@@ -170,9 +206,9 @@ final class OverlayView: NSView {
                 origin: origin,
                 debugRects: Config.debugOverlay ? debugRects(from: snapshot) : [],
                 santa: santa?.drawItem(origin: origin),
-                sheet: sheet?.isActive == true ? sheet?.texture : nil),
+                sheet: sheetIsActive ? sheet?.texture : nil,
+                drawsFlakes: false),
             ring: ring, into: metalLayer)
-        frameCount += 1
     }
 
     /// Пока что-то двигается быстро, кадров больше, иначе шапки дёргаются вместе с окном.

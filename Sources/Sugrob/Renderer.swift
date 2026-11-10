@@ -46,6 +46,8 @@ struct SceneInput {
     var debugRects: [RectInstance]
     var santa: SantaDraw? = nil
     var sheet: MTLTexture? = nil
+    /// На экране хлопья рисуют слои `FlakeLayers`; в Metal они нужны только отладочному кадру.
+    var drawsFlakes = true
 }
 
 @MainActor
@@ -337,7 +339,7 @@ final class Renderer {
 
         let buffers = ring.next()
         let flakePointer = buffers.flakes.contents().assumingMemoryBound(to: FlakeInstance.self)
-        let flakeCount = field.writeInstances(to: flakePointer, time: scene.time)
+        let flakeCount = scene.drawsFlakes ? field.writeInstances(to: flakePointer, time: scene.time) : 0
         let debrisCount = caps.writeDebris(
             to: flakePointer + flakeCount, origin: scene.origin, viewport: scene.viewport)
         caps.buildMesh(

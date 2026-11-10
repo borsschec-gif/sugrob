@@ -304,7 +304,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func logRenderStats() {
         guard !governor.isPaused else { return }
         let frames = overlays.map { $0.overlayView.takeFrameCount() }
-        let fps = frames.map { String(format: "%.1f", Double($0) / 10) }.joined(separator: ",")
-        Log.shared.write("render fps=[\(fps)]")
+        let fps = frames.map { String(format: "%.1f", Double($0.flakes) / 10) }.joined(separator: ",")
+        let metal = frames.map { String(format: "%.1f", Double($0.metal) / 10) }.joined(separator: ",")
+        Log.shared.write("render fps=[\(fps)] metal=[\(metal)]")
     }
 }
