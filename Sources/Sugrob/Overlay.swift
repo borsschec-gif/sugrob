@@ -126,7 +126,9 @@ final class OverlayView: NSView {
         lastTimestamp = link.timestamp
         let time = Float(link.timestamp.truncatingRemainder(dividingBy: 100_000))
         let snapshot = tracker.snapshot
-        updateFrameRate(of: link, isFast: snapshot.isFast)
+        let isMoving = snapshot.isFast || caps.hasFastMotion || santa?.isRiding == true
+            || (lid.map { abs($0.flakeKick) > 1 } ?? false)
+        updateFrameRate(of: link, isFast: isMoving)
 
         field.density = governor?.density ?? 1
         let origin = SIMD2(Float(screenOrigin.x), Float(screenOrigin.y))
@@ -173,10 +175,10 @@ final class OverlayView: NSView {
         frameCount += 1
     }
 
-    /// Пока окна двигаются, шапкам нужно 60 кадров, иначе они дёргаются вместе с окном.
+    /// Пока что-то двигается быстро, кадров больше, иначе шапки дёргаются вместе с окном.
     private func updateFrameRate(of link: CADisplayLink, isFast: Bool) {
         let base = governor?.fps ?? Config.fps
-        let target = isFast ? max(60, base) : base
+        let target = isFast ? max(Config.motionFPS, base) : base
         guard target != currentFPS else { return }
         currentFPS = target
         link.preferredFrameRateRange = CAFrameRateRange(minimum: target, maximum: target, preferred: target)

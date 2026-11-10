@@ -856,6 +856,9 @@ final class CapField {
 
     /// Вызывается каждый кадр. Медленное движение по снегу скатывает снежок,
     /// обычное стряхивает снег, резкий взмах ничего не задевает.
+    /// Снежок или летящие куски снега двигаются быстро, и на 30 кадрах это заметно.
+    var hasFastMotion: Bool { ball != nil || !debris.isEmpty }
+
     func brush(cursor: CGPoint, now: CFTimeInterval) {
         guard now > lastBrushTime else { return }
         let interval = Float(min(now - lastBrushTime, 1.0 / 15))

@@ -70,6 +70,7 @@ final class PowerGovernor {
     /// Экран проснулся; аргумент — сколько секунд он спал.
     var onScreensWoke: ((TimeInterval) -> Void)?
     private var sleptAt: Date?
+    private var lastMode = ""
 
     init(settings: Settings, tracker: WindowTracker) {
         self.settings = settings
@@ -107,6 +108,12 @@ final class PowerGovernor {
     func evaluate() {
         let saving = settings.batterySaving && Self.isSavingPower
         fps = saving || Self.isIdle ? min(Config.fps, 30) : Config.fps
+        // Состояние меняется редко, но без строки в логе непонятно, откуда в нём 30 кадров.
+        let mode = saving ? "экономия" : Self.isIdle ? "простой" : "обычно"
+        if mode != lastMode {
+            lastMode = mode
+            Log.shared.write("governor: \(mode), fps=\(fps)")
+        }
         density = settings.intensity * (saving ? 0.5 : 1)
 
         let reason = pauseReason()

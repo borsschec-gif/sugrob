@@ -45,6 +45,8 @@ final class SantaController {
     private var screen: CGRect { CGDisplayBounds(CGMainDisplayID()) }
 
     /// Запускает проезд из меню, не дожидаясь расписания.
+    var isRiding: Bool { x != nil }
+
     func rideNow() {
         guard x == nil else { return }
         startRide()

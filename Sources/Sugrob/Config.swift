@@ -4,8 +4,11 @@ import Foundation
 enum Config {
     private static let env = ProcessInfo.processInfo.environment
 
-    /// Частота кадров снега.
-    static let fps = Float(env["SUGROB_FPS"] ?? "") ?? 60
+    /// Частота кадров падающего снега. Каждый кадр оверлея заставляет систему пересобрать весь экран,
+    /// поэтому в покое 30: на медленном снегопаде разница с 60 почти не видна, а нагрузка вдвое меньше.
+    static let fps = Float(env["SUGROB_FPS"] ?? "") ?? 30
+    /// Частота, пока что-то двигается быстро: окна, снежок, сорванный снег, Дед Мороз.
+    static let motionFPS = Float(env["SUGROB_MOTION_FPS"] ?? "") ?? 60
     /// Постоянная частота опроса окон. Без неё опрос адаптивный.
     static let fixedPollHz = Double(env["SUGROB_HZ"] ?? "")
     /// Рисовать рамки окон поверх снега.
